@@ -1,48 +1,132 @@
-import { ensureSchema, getMeta, getStats, listArticles, saveArticles } from "./db.js";
+import {
+  clearLoginAttempts,
+  clearUserTelegram,
+  countComments,
+  countUsers,
+  createComment,
+  createLinkToken,
+  createUser,
+  deleteArticleRow,
+  deleteCommentRow,
+  ensureSchema,
+  getArticle,
+  getComment,
+  getMeta,
+  getStats,
+  getUserByUsername,
+  isRateLimited,
+  listApprovedComments,
+  listArticles,
+  listCommentsForAdmin,
+  listUsers,
+  recordLoginAttempt,
+  replyToComment,
+  saveArticles,
+  setArticleArchived,
+  setCommentStatus,
+  setUserNotifyAllowed,
+  setUserNotifyEnabled,
+  setUserPhone,
+  setUserRole,
+  setUserStatus,
+  toggleLike,
+} from "./db.js";
+import {
+  clearSessionCookie,
+  createSession,
+  destroySession,
+  getSessionUser,
+  isSameOrigin,
+  makePassword,
+  clientKey,
+  randomToken,
+  sessionCookie,
+  verifyPassword,
+} from "./auth.js";
 import { fetchAll } from "./feeds.js";
-import { dayParts, fa, formatFull, localDayKey, parseDate, relative } from "./jalali.js";
+import { checkComment } from "./moderation.js";
+import { botConfigured, handleTelegramWebhook, notifyNewArticles, notifyReply } from "./telegram.js";
+import {
+  adminCommentsPage,
+  adminNewsPage,
+  adminOverviewPage,
+  adminUsersPage,
+  articlePage,
+  errorPage,
+  flashFor,
+  homePage,
+  loginPage,
+  panelPage,
+  registerPage,
+} from "./views.js";
 import { CSS } from "./style.js";
 
 const REFRESH_MIN_INTERVAL_MS = 2 * 60 * 1000;
-
-const EMPTY_STATE = `
-<section class="empty">
-  <h2>هنوز خبری ذخیره نشده است</h2>
-  <p>واکشی اولیه ممکن است چند ثانیه طول بکشد. دکمه را بزنید یا چند لحظه بعد صفحه را تازه کنید.</p>
-  <form method="post" action="/refresh"><button class="primary" type="submit">واکشی خبرها</button></form>
-</section>`;
+const USERNAME_RE = /^[\p{L}\p{N}_.-]{3,30}$/u;
 
 let refreshInFlight = null;
 
-function escapeHtml(value) {
-  return String(value ?? "").replace(
-    /[&<>"']/g,
-    (character) =>
-      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]
+const SECURITY_HEADERS = {
+  "X-Content-Type-Options": "nosniff",
+  "Referrer-Policy": "no-referrer",
+  "X-Frame-Options": "DENY",
+  "Content-Security-Policy":
+    "default-src 'self'; img-src 'self' https: data:; style-src 'self'; script-src 'self' 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+};
+
+function htmlResponse(html, status = 200, extraHeaders = {}) {
+  return new Response(html, {
+    status,
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+      ...SECURITY_HEADERS,
+      ...extraHeaders,
+    },
+  });
+}
+
+function redirect(location, headers = {}) {
+  return new Response(null, { status: 303, headers: { Location: location, ...headers } });
+}
+
+function notFound(user) {
+  return htmlResponse(errorPage({ user, title: "یافت نشد", message: "صفحه‌ای که خواستید وجود ندارد." }), 404);
+}
+
+function forbidden(user) {
+  return htmlResponse(
+    errorPage({ user, title: "دسترسی ندارید", message: "این بخش فقط برای ادمین است." }),
+    403
   );
 }
 
-function flashFor(url) {
-  const params = url.searchParams;
-  if (params.has("refreshed")) {
-    const result = params.get("refreshed");
-    if (result === "1") return "به‌روزرسانی انجام شد.";
-    if (result === "rate") return "به‌تازگی به‌روزرسانی شده است؛ چند دقیقه بعد دوباره تلاش کنید.";
-    if (result === "error") return "واکشی ناموفق بود؛ اتصال اینترنت را بررسی کنید.";
-    return "خبر تازه‌تری پیدا نشد.";
+function safeNext(value) {
+  return value && /^\/(?!\/)/.test(value) && !value.startsWith("/logout") ? value : "";
+}
+
+function backTo(request, fallback) {
+  const referer = request.headers.get("Referer");
+  if (!referer) return fallback;
+  try {
+    const parsed = new URL(referer);
+    const target = new URL(request.url);
+    if (parsed.host !== target.host) return fallback;
+    const path = `${parsed.pathname}${parsed.search}`;
+    return path.startsWith("/") && !path.startsWith("//") ? path : fallback;
+  } catch {
+    return fallback;
   }
-  if (params.has("busy")) return "یک به‌روزرسانی در حال اجراست؛ چند لحظه بعد دوباره تلاش کنید.";
-  return "";
 }
 
 async function refreshNews(env) {
   if (refreshInFlight) return refreshInFlight;
 
   refreshInFlight = (async () => {
-    await ensureSchema(env.DB);
+    await ensureSchema(env.DB, env);
     const last = await getMeta(env.DB, "last_fetch");
     if (last && Date.now() - new Date(last).getTime() < REFRESH_MIN_INTERVAL_MS) {
-      return { fetched: 0, inserted: 0, skipped: true };
+      return { fetched: 0, inserted: 0, skipped: true, articles: [] };
     }
 
     const { articles, feedsOk } = await fetchAll(env);
@@ -50,7 +134,7 @@ async function refreshNews(env) {
 
     const fetchedAt = new Date().toISOString();
     const inserted = await saveArticles(env.DB, articles, fetchedAt);
-    return { fetched: articles.length, inserted, skipped: false };
+    return { fetched: articles.length, inserted: inserted.length, skipped: false, articles: inserted };
   })().finally(() => {
     refreshInFlight = null;
   });
@@ -58,194 +142,434 @@ async function refreshNews(env) {
   return refreshInFlight;
 }
 
-function card(row, published, now) {
-  const url = escapeHtml(row.url);
-  const title = escapeHtml(row.title);
-  const source = escapeHtml(row.source || "منبع نامشخص");
-  const summary = escapeHtml(row.summary || "");
-  const image = row.image_url || "";
-
-  const thumb =
-    image.startsWith("https://")
-      ? `<a class="thumb" href="${url}" target="_blank" rel="noopener noreferrer" tabindex="-1">` +
-        `<img src="${escapeHtml(image)}" alt="" loading="lazy" onerror="this.parentElement.remove()"></a>`
-      : "";
-
-  const summaryHtml = summary ? `<p class="summary">${summary}</p>` : "";
-  const fullTime = escapeHtml(formatFull(published));
-
-  return (
-    `<article class="card">${thumb}<div class="body">` +
-    `<h3><a href="${url}" target="_blank" rel="noopener noreferrer">${title}</a></h3>` +
-    summaryHtml +
-    `<div class="meta"><span class="source">${source}</span><span class="dot">·</span>` +
-    `<time datetime="${escapeHtml(row.published_at || "")}" title="${fullTime}">${relative(published, now)}</time>` +
-    `</div></div></article>`
-  );
-}
-
-function groupRows(rows, now) {
-  const groups = [];
-  for (const row of rows) {
-    const published = parseDate(row.published_at);
-    const key = localDayKey(published);
-    let group = groups[groups.length - 1];
-    if (!group || group.key !== key) {
-      const [title, subtitle] = dayParts(published, now);
-      group = { key, title, subtitle, items: [] };
-      groups.push(group);
-    }
-    group.items.push({ row, published });
-  }
-  return groups;
-}
-
-async function renderPage(env, flash) {
-  const [rows, stats] = await Promise.all([listArticles(env.DB, 300), getStats(env.DB)]);
-  const now = new Date();
-  const last = stats.lastFetch ? parseDate(stats.lastFetch) : null;
-  const updated = last ? relative(last, now) : "—";
-
-  const sections = groupRows(rows, now).map((group) => {
-    const cards = group.items.map(({ row, published }) => card(row, published, now)).join("");
-    return (
-      `<section class="day"><div class="day-head">` +
-      `<h2>${escapeHtml(group.title)}</h2><span>${escapeHtml(group.subtitle)}</span>` +
-      `</div>${cards}</section>`
-    );
-  });
-
-  const main = sections.join("") || EMPTY_STATE;
-  const flashHtml = flash ? `<span class="flash">${escapeHtml(flash)}</span>` : "";
-
-  return `<!doctype html>
-<html lang="fa" dir="rtl">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="light dark">
-<title>مهران‌نیوز | اخبار مهران مدیری</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='42' fill='%23e8590c'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="/static/style.css">
-</head>
-<body>
-<div class="wrap">
-  <header class="masthead">
-    <div class="topline">
-      <div class="brand"><span class="mark" aria-hidden="true"></span><h1>مهران‌نیوز</h1></div>
-      <form class="refresh" method="post" action="/refresh">
-        <button type="submit">
-          <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          به‌روزرسانی
-        </button>
-      </form>
-    </div>
-    <p class="tagline">همه‌ی اخبار مهران مدیری، هر روز و یک‌جا — از رسانه‌های فارسی و انگلیسی.</p>
-    <div class="status">
-      <span>${fa(stats.count)} خبر</span>
-      <span class="sep">·</span>
-      <span>${fa(stats.sources)} منبع</span>
-      <span class="sep">·</span>
-      <span>آخرین به‌روزرسانی ${updated}</span>
-      ${flashHtml}
-    </div>
-  </header>
-  <main>${main}</main>
-  <footer>
-    <p>منابع: بینگ‌نیوز و گوگل‌نیوز · به‌روزرسانی خودکار هر ۶ ساعت · داده‌ها در Cloudflare D1</p>
-  </footer>
-</div>
-</body>
-</html>`;
-}
-
-async function handleRefresh(request, env, url) {
+async function handleRefresh(request, env, url, ctx) {
   let result = "0";
   try {
     const outcome = await refreshNews(env);
     if (outcome.skipped) result = "rate";
     else if (outcome.inserted > 0) result = "1";
+    if (outcome.articles?.length) {
+      ctx.waitUntil(
+        notifyNewArticles(env, outcome.articles).catch((error) =>
+          console.error("telegram push failed:", error)
+        )
+      );
+    }
   } catch (error) {
     console.error("refresh failed:", error);
     result = "error";
   }
-  return Response.redirect(new URL(`/?refreshed=${result}`, url).toString(), 303);
+  return redirect(`/?refreshed=${result}`);
+}
+
+async function handleLogin(request, env, url) {
+  const form = await request.formData();
+  const username = String(form.get("username") || "").trim();
+  const password = String(form.get("password") || "");
+  const next = safeNext(String(form.get("next") || ""));
+  const key = `${clientKey(request)}|${username.toLowerCase()}`;
+
+  if (!username || !password) return redirect(loginRedirect("bad_login", next));
+
+  if (await isRateLimited(env.DB, key)) return redirect(loginRedirect("rate", next));
+
+  const row = await getUserByUsername(env.DB, username);
+  const valid = row ? await verifyPassword(password, row.salt, row.password_hash) : false;
+  if (!valid) {
+    await recordLoginAttempt(env.DB, key);
+    return redirect(loginRedirect("bad_login", next));
+  }
+
+  if (row.status === "pending") return redirect(loginRedirect("pending", next));
+  if (row.status === "blocked") return redirect(loginRedirect("blocked", next));
+  if (row.status !== "active") return redirect(loginRedirect("bad_login", next));
+
+  await clearLoginAttempts(env.DB, key);
+  const token = await createSession(env.DB, row.id);
+  const destination = next || (row.role === "admin" ? "/admin" : "/panel");
+  return redirect(destination, {
+    "Set-Cookie": sessionCookie(token, url.protocol === "https:"),
+  });
+}
+
+function loginRedirect(message, next) {
+  const params = new URLSearchParams({ msg: message });
+  if (next) params.set("next", next);
+  return `/login?${params}`;
+}
+
+async function handleRegister(request, env) {
+  const form = await request.formData();
+  const username = String(form.get("username") || "").trim();
+  const password = String(form.get("password") || "");
+
+  if (!USERNAME_RE.test(username)) return redirect("/register?msg=invalid_username");
+  if (password.length < 6 || password.length > 100) return redirect("/register?msg=weak");
+  if (await getUserByUsername(env.DB, username)) return redirect("/register?msg=duplicate");
+
+  const { salt, hash } = await makePassword(password);
+  await createUser(env.DB, { username, hash, salt, role: "user", status: "pending" });
+  return redirect("/login?msg=registered");
+}
+
+async function handlePanelAction(request, env, user, url) {
+  const { pathname } = url;
+
+  if (pathname === "/panel/notify") {
+    const form = await request.formData();
+    const enabled = form.get("enabled") === "1";
+    if (!user.notify_allowed) return redirect("/panel?msg=notify_saved");
+    await setUserNotifyEnabled(env.DB, user.id, enabled);
+    return redirect("/panel?msg=notify_saved");
+  }
+
+  if (pathname === "/panel/phone") {
+    const form = await request.formData();
+    const phone = String(form.get("phone") || "").replace(/[^\d+]/g, "").slice(0, 20);
+    await setUserPhone(env.DB, user.id, phone || null);
+    return redirect("/panel?msg=profile_saved");
+  }
+
+  if (pathname === "/panel/telegram/link") {
+    const token = randomToken(18);
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+    await createLinkToken(env.DB, user.id, token, expiresAt);
+    return redirect(`/panel?token=${encodeURIComponent(token)}`);
+  }
+
+  if (pathname === "/panel/telegram/unlink") {
+    await clearUserTelegram(env.DB, user.id);
+    return redirect("/panel?msg=telegram_unlinked");
+  }
+
+  return notFound(user);
+}
+
+async function handleAdminAction(request, env, user, url, ctx) {
+  const { pathname } = url;
+
+  let match = pathname.match(/^\/admin\/news\/(\d+)\/(archive|delete)$/);
+  if (match) {
+    const id = Number(match[1]);
+    if (match[2] === "archive") {
+      await setArticleArchived(env.DB, id, 1);
+      return redirect("/admin/news?msg=article_archived");
+    }
+    await deleteArticleRow(env.DB, id);
+    const back = backTo(request, "/admin/news");
+    return redirect(`${back}${back.includes("?") ? "&" : "?"}msg=article_deleted`);
+  }
+
+  match = pathname.match(/^\/admin\/archive\/(\d+)\/restore$/);
+  if (match) {
+    await setArticleArchived(env.DB, Number(match[1]), 0);
+    return redirect("/admin/archive?msg=article_restored");
+  }
+
+  match = pathname.match(/^\/admin\/users\/(\d+)\/(approve|block|unblock|promote|notify-on|notify-off)$/);
+  if (match) {
+    const id = Number(match[1]);
+    const action = match[2];
+    if (action === "approve") {
+      await setUserStatus(env.DB, id, "active", user.id);
+      return redirect("/admin/users?msg=user_approved");
+    }
+    if (action === "block") {
+      if (id === user.id) return redirect("/admin/users");
+      await setUserStatus(env.DB, id, "blocked", user.id);
+      return redirect("/admin/users?msg=user_blocked");
+    }
+    if (action === "unblock") {
+      await setUserStatus(env.DB, id, "active", user.id);
+      return redirect("/admin/users?msg=user_unblocked");
+    }
+    if (action === "promote") {
+      await setUserRole(env.DB, id, "admin");
+      return redirect("/admin/users?msg=user_promoted");
+    }
+    await setUserNotifyAllowed(env.DB, id, action === "notify-on");
+    return redirect(`/admin/users?msg=${action === "notify-on" ? "notify_on" : "notify_off"}`);
+  }
+
+  if (pathname === "/admin/users/create-admin") {
+    const form = await request.formData();
+    const username = String(form.get("username") || "").trim();
+    const password = String(form.get("password") || "");
+    if (!USERNAME_RE.test(username) || password.length < 6) {
+      return redirect("/admin/users?msg=weak");
+    }
+    if (await getUserByUsername(env.DB, username)) {
+      return redirect("/admin/users?msg=duplicate");
+    }
+    const { salt, hash } = await makePassword(password);
+    await createUser(env.DB, { username, hash, salt, role: "admin", status: "active" });
+    return redirect("/admin/users?msg=admin_created");
+  }
+
+  match = pathname.match(/^\/admin\/comments\/(\d+)\/(approve|reject|delete|reply)$/);
+  if (match) {
+    const id = Number(match[1]);
+    if (match[2] === "approve") {
+      await setCommentStatus(env.DB, id, "approved", user.id);
+      return redirect("/admin/comments?status=pending&msg=comment_approved");
+    }
+    if (match[2] === "reject") {
+      await setCommentStatus(env.DB, id, "rejected", user.id);
+      return redirect("/admin/comments?status=pending&msg=comment_rejected");
+    }
+    if (match[2] === "delete") {
+      await deleteCommentRow(env.DB, id);
+      return redirect(backTo(request, "/admin/comments"));
+    }
+    const form = await request.formData();
+    const reply = String(form.get("reply") || "").trim();
+    if (!reply) return redirect("/admin/comments?status=approved");
+    await replyToComment(env.DB, id, reply.slice(0, 800), user.id);
+    const comment = await getComment(env.DB, id);
+    if (comment) {
+      ctx.waitUntil(
+        notifyReply(env, comment).catch((error) => console.error("reply notify failed:", error))
+      );
+    }
+    return redirect("/admin/comments?status=approved&msg=comment_replied");
+  }
+
+  return notFound(user);
+}
+
+async function renderAdminComments(env, user, url) {
+  const status = url.searchParams.get("status") === "approved" ? "approved" : "pending";
+  const comments = await listCommentsForAdmin(env.DB, status);
+  return adminCommentsPage({ user, flash: flashFor(url), comments, status });
+}
+
+async function handleAdminPage(env, user, url) {
+  const { pathname } = url;
+
+  if (pathname === "/admin") {
+    const [stats, pendingComments, pendingUsers, users] = await Promise.all([
+      getStats(env.DB),
+      countComments(env.DB, "pending"),
+      countUsers(env.DB, "pending"),
+      countUsers(env.DB),
+    ]);
+    return adminOverviewPage({
+      user,
+      flash: flashFor(url),
+      stats: { ...stats, pendingComments, pendingUsers, users },
+    });
+  }
+
+  if (pathname === "/admin/news" || pathname === "/admin/archive") {
+    const archived = pathname === "/admin/archive";
+    const articles = await listArticles(env.DB, 300, 0, archived ? 1 : 0);
+    return adminNewsPage({ user, flash: flashFor(url), articles, archived });
+  }
+
+  if (pathname === "/admin/users") {
+    const entries = await listUsers(env.DB);
+    return adminUsersPage({ user, flash: flashFor(url), entries });
+  }
+
+  if (pathname === "/admin/comments") return renderAdminComments(env, user, url);
+
+  return null;
+}
+
+async function handleArticle(request, env, url, user, ctx) {
+  const likeMatch = url.pathname.match(/^\/news\/(\d+)\/like$/);
+  const commentMatch = url.pathname.match(/^\/news\/(\d+)\/comment$/);
+
+  if (likeMatch) {
+    const id = Number(likeMatch[1]);
+    if (!user) return redirect(`/login?msg=login_required&next=${encodeURIComponent(`/news/${id}`)}`);
+    const article = await getArticle(env.DB, id, user.id);
+    if (!article) return notFound(user);
+    await toggleLike(env.DB, user.id, article.id);
+    return redirect(backTo(request, `/news/${article.id}`));
+  }
+
+  if (commentMatch) {
+    const id = Number(commentMatch[1]);
+    if (!user) return redirect(`/login?msg=login_required&next=${encodeURIComponent(`/news/${id}`)}`);
+    const article = await getArticle(env.DB, id, user.id);
+    if (!article) return notFound(user);
+    const form = await request.formData();
+    const result = checkComment(form.get("body"));
+    if (!result.ok) {
+      return redirect(`/news/${article.id}?msg=profanity#comments`);
+    }
+    const status = user.role === "admin" ? "approved" : "pending";
+    await createComment(env.DB, {
+      articleId: article.id,
+      userId: user.id,
+      body: result.body,
+      status,
+    });
+    return redirect(`/news/${article.id}?msg=${status === "approved" ? "comment_posted" : "comment_pending"}#comments`);
+  }
+
+  return null;
+}
+
+async function renderArticle(env, url, user) {
+  const match = url.pathname.match(/^\/news\/(\d+)$/);
+  if (!match) return null;
+  const article = await getArticle(env.DB, Number(match[1]), user?.id || 0);
+  if (!article || (article.archived && user?.role !== "admin")) return { status: 404 };
+  const comments = await listApprovedComments(env.DB, article.id);
+  return {
+    html: articlePage({ user, article, comments, flash: flashFor(url), now: new Date() }),
+  };
 }
 
 export default {
-  async fetch(request, env) {
-    await ensureSchema(env.DB);
-    const url = new URL(request.url);
-    const { pathname } = url;
+  async fetch(request, env, ctx) {
+    try {
+      await ensureSchema(env.DB, env);
+      const url = new URL(request.url);
+      const { pathname } = url;
+      const user = await getSessionUser(request, env.DB);
+      const isPost = request.method === "POST";
 
-    if (pathname === "/" && request.method === "GET") {
-      const html = await renderPage(env, flashFor(url));
-      return new Response(html, {
-        headers: {
-          "Content-Type": "text/html; charset=utf-8",
-          "Cache-Control": "no-store",
-          "X-Content-Type-Options": "nosniff",
-          "Referrer-Policy": "no-referrer",
-        },
-      });
-    }
+      if (isPost && pathname !== "/telegram/webhook" && !isSameOrigin(request)) {
+        return new Response("Forbidden", { status: 403 });
+      }
 
-    if (pathname === "/refresh") {
-      if (request.method !== "POST") {
-        return new Response("Method Not Allowed", {
-          status: 405,
-          headers: { Allow: "POST" },
+      if (pathname === "/telegram/webhook" && isPost) {
+        return handleTelegramWebhook(request, env);
+      }
+
+      if (pathname === "/" && request.method === "GET") {
+        const [rows, stats] = await Promise.all([
+          listArticles(env.DB, 300, user?.id || 0, 0),
+          getStats(env.DB),
+        ]);
+        return htmlResponse(
+          homePage({ user, rows, stats, flash: flashFor(url), now: new Date() })
+        );
+      }
+
+      if (pathname === "/login" && request.method === "GET") {
+        return htmlResponse(
+          loginPage({ user, flash: flashFor(url), next: safeNext(url.searchParams.get("next") || "") })
+        );
+      }
+      if (pathname === "/login" && isPost) return handleLogin(request, env, url);
+
+      if (pathname === "/register" && request.method === "GET") {
+        return htmlResponse(registerPage({ user, flash: flashFor(url) }));
+      }
+      if (pathname === "/register" && isPost) return handleRegister(request, env);
+
+      if (pathname === "/logout" && isPost) {
+        await destroySession(request, env.DB);
+        return redirect("/", {
+          "Set-Cookie": clearSessionCookie(url.protocol === "https:"),
         });
       }
-      return handleRefresh(request, env, url);
-    }
 
-    if (pathname === "/api/news" && request.method === "GET") {
-      const [articles, stats] = await Promise.all([
-        listArticles(env.DB, 300),
-        getStats(env.DB),
-      ]);
-      return new Response(
-        JSON.stringify({
-          count: stats.count,
-          sources: stats.sources,
-          last_fetch: stats.lastFetch,
-          articles,
-        }),
-        {
-          headers: {
-            "Content-Type": "application/json; charset=utf-8",
-            "Cache-Control": "no-store",
-          },
+      if (pathname === "/panel") {
+        if (!user) return redirect("/login?msg=login_required&next=%2Fpanel");
+        if (request.method !== "GET") {
+          return handlePanelAction(request, env, user, url);
         }
+        return htmlResponse(
+          panelPage({
+            user,
+            flash: flashFor(url),
+            linkToken: url.searchParams.get("token") || "",
+            botUsername: env.TELEGRAM_BOT_USERNAME || "",
+          })
+        );
+      }
+      if (pathname.startsWith("/panel/") && isPost) {
+        if (!user) return redirect("/login?msg=login_required&next=%2Fpanel");
+        return handlePanelAction(request, env, user, url);
+      }
+
+      const articleResult = await renderArticle(env, url, user);
+      if (articleResult) {
+        if (articleResult.status === 404) return notFound(user);
+        return htmlResponse(articleResult.html);
+      }
+
+      const articleAction = isPost ? await handleArticle(request, env, url, user, ctx) : null;
+      if (articleAction) return articleAction;
+
+      if (pathname === "/admin" || pathname.startsWith("/admin/")) {
+        if (!user) return redirect("/login?msg=login_required&next=%2Fadmin");
+        if (user.role !== "admin") return forbidden(user);
+        if (isPost) return handleAdminAction(request, env, user, url, ctx);
+        const html = await handleAdminPage(env, user, url);
+        if (html) return htmlResponse(html);
+        return notFound(user);
+      }
+
+      if (pathname === "/refresh" && isPost) {
+        return handleRefresh(request, env, url, ctx);
+      }
+
+      if (pathname === "/api/news" && request.method === "GET") {
+        const [articles, stats] = await Promise.all([
+          listArticles(env.DB, 300, 0, 0),
+          getStats(env.DB),
+        ]);
+        return new Response(
+          JSON.stringify({
+            count: stats.count,
+            sources: stats.sources,
+            last_fetch: stats.lastFetch,
+            articles,
+          }),
+          {
+            headers: {
+              "Content-Type": "application/json; charset=utf-8",
+              "Cache-Control": "no-store",
+            },
+          }
+        );
+      }
+
+      if (pathname === "/health") {
+        return new Response(JSON.stringify({ ok: true, bot: botConfigured(env) }), {
+          headers: { "Content-Type": "application/json; charset=utf-8" },
+        });
+      }
+
+      if (pathname === "/static/style.css") {
+        return new Response(CSS, {
+          headers: {
+            "Content-Type": "text/css; charset=utf-8",
+            "Cache-Control": "public, max-age=3600",
+          },
+        });
+      }
+
+      if (pathname === "/favicon.ico") return new Response(null, { status: 204 });
+
+      return notFound(user);
+    } catch (error) {
+      console.error("worker error:", error);
+      return htmlResponse(
+        errorPage({
+          user: null,
+          title: "خطای سرور",
+          message: "مشکلی پیش آمد. چند لحظه بعد دوباره تلاش کنید.",
+        }),
+        500
       );
     }
-
-    if (pathname === "/health") {
-      return new Response(JSON.stringify({ ok: true }), {
-        headers: { "Content-Type": "application/json; charset=utf-8" },
-      });
-    }
-
-    if (pathname === "/static/style.css") {
-      return new Response(CSS, {
-        headers: {
-          "Content-Type": "text/css; charset=utf-8",
-          "Cache-Control": "public, max-age=3600",
-        },
-      });
-    }
-
-    if (pathname === "/favicon.ico") {
-      return new Response(null, { status: 204 });
-    }
-
-    return new Response("Not found", { status: 404 });
   },
 
   async scheduled(event, env, ctx) {
     ctx.waitUntil(
-      refreshNews(env).catch((error) => console.error("scheduled refresh failed:", error))
+      refreshNews(env)
+        .then((outcome) => {
+          if (outcome.articles?.length) return notifyNewArticles(env, outcome.articles);
+          return null;
+        })
+        .catch((error) => console.error("scheduled refresh failed:", error))
     );
   },
 };

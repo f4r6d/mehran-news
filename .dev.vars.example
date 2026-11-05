@@ -1,0 +1,7 @@
+# این فایل را به .dev.vars کپی کنید. مقادیر واقعی را هرگز در گیت قرار ندهید.
+ADMIN_USERNAME="admin"
+ADMIN_PASSWORD="یک-رمز-قوی-جایگزین-کنید"
+
+# اختیاری؛ فقط برای تست ربات تلگرام در محیط محلی
+# TELEGRAM_BOT_TOKEN=""
+# TELEGRAM_WEBHOOK_SECRET=""

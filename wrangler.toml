@@ -9,6 +9,8 @@ crons = ["0 */6 * * *"]
 
 [vars]
 MAX_AGE_DAYS = "45"
+SITE_URL = "https://mehran-news.farshidgholizadeh.workers.dev"
+TELEGRAM_BOT_USERNAME = ""
 
 [[d1_databases]]
 binding = "DB"
