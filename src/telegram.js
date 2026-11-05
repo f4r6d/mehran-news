@@ -6,6 +6,7 @@ import {
   getBotState,
   getComment,
   getUserByChatId,
+  listAdminChats,
   listArticles,
   listCommentsForAdmin,
   listNotifyTargets,
@@ -35,7 +36,6 @@ const BTN = {
   pendingComments: "نظرهای در انتظار",
   pendingUsers: "کاربران در انتظار",
   adminNews: "مدیریت اخبار",
-  back: "بک",
 };
 
 const MENU_COMMANDS = new Set([
@@ -49,7 +49,6 @@ const MENU_COMMANDS = new Set([
   BTN.pendingComments,
   BTN.pendingUsers,
   BTN.adminNews,
-  BTN.back,
 ]);
 
 export function botConfigured(env) {
@@ -105,7 +104,6 @@ function mainKeyboard(isAdmin) {
     rows.push([{ text: BTN.pendingComments }, { text: BTN.pendingUsers }]);
     rows.push([{ text: BTN.adminNews }]);
   }
-  rows.push([{ text: BTN.back }]);
   return { keyboard: rows, resize_keyboard: true, is_persistent: true };
 }
 
@@ -130,7 +128,7 @@ async function sendMenu(env, chatId, isAdmin) {
   return sendMessage(
     env,
     chatId,
-    "منوی مهران‌نیوز\nاز دکمه‌های پایین صفحه انتخاب کنید.",
+    "منوی مدیری‌نیوز\nاز دکمه‌های پایین صفحه انتخاب کنید.",
     mainKeyboard(isAdmin)
   );
 }
@@ -153,22 +151,18 @@ async function sendNews(env, chatId) {
   if (!articles.length) {
     return sendMessage(env, chatId, "هنوز خبری ذخیره نشده است.");
   }
-  const lines = articles.map(
-    (article, index) =>
-      `${fa(index + 1)}. ${article.title}${article.source ? ` — ${article.source}` : ""}`
-  );
-  const rows = [];
-  articles.forEach((article, index) => {
-    if (/^https?:\/\//i.test(article.url || "")) {
-      rows.push([{ text: `باز کردن خبر ${fa(index + 1)}`, url: article.url }]);
-    }
-  });
-  return sendMessage(
-    env,
-    chatId,
-    `آخرین اخبار\n\n${lines.join("\n")}`,
-    rows.length ? { inline_keyboard: rows } : undefined
-  );
+  let last = null;
+  for (let index = 0; index < articles.length; index += 1) {
+    const article = articles[index];
+    const text =
+      `خبر ${fa(index + 1)} از ${fa(articles.length)}\n\n` +
+      `${article.title}${article.source ? `\n${article.source}` : ""}`;
+    const inline = /^https?:\/\//i.test(article.url || "")
+      ? { inline_keyboard: [[{ text: "باز کردن خبر", url: article.url }]] }
+      : undefined;
+    last = await sendMessage(env, chatId, text, inline);
+  }
+  return last;
 }
 
 function notifyKeyboard(enabled) {
@@ -317,7 +311,7 @@ async function sendArticleDigestToUser(env, user, articles) {
   return sendMessage(
     env,
     user.telegram_chat_id,
-    `خبر تازه درباره مهران مدیری:\n\n${lines}`,
+    `خبر تازه درباره مهران مدیری در مدیری‌نیوز:\n\n${lines}`,
     rows.length ? { inline_keyboard: rows } : undefined
   );
 }
@@ -331,6 +325,39 @@ export async function notifyNewArticles(env, articles) {
     if (result?.ok) sent += 1;
   }
   return sent;
+}
+
+function adminLink(env, path) {
+  return /^https?:\/\//i.test(env.SITE_URL || "")
+    ? `${env.SITE_URL.replace(/\/$/, "")}${path}`
+    : null;
+}
+
+async function notifyAdmins(env, text, path, label) {
+  if (!botConfigured(env)) return 0;
+  const admins = await listAdminChats(env.DB);
+  if (!admins.length) return 0;
+  const url = adminLink(env, path);
+  const inline = url ? { inline_keyboard: [[{ text: label, url }]] } : undefined;
+  let sent = 0;
+  for (const admin of admins) {
+    const result = await sendMessage(env, admin.telegram_chat_id, text, inline);
+    if (result?.ok) sent += 1;
+  }
+  return sent;
+}
+
+export async function notifyAdminsNewComment(env, comment) {
+  if (!botConfigured(env) || !comment) return 0;
+  const text =
+    `نظر تازه از ${comment.username}\n\n«${String(comment.body || "").slice(0, 400)}»\n\n` +
+    `خبر: ${comment.article_title}`;
+  return notifyAdmins(env, text, "/admin/comments?status=pending", "بررسی نظرها");
+}
+
+export async function notifyAdminsNewUser(env, username) {
+  const text = `کاربر تازه ثبت‌نام کرد: ${username}\nدر انتظار تأیید ادمین.`;
+  return notifyAdmins(env, text, "/admin/users", "مدیریت کاربران");
 }
 
 export async function notifyReply(env, comment) {
@@ -432,12 +459,6 @@ async function handleCallback(env, update) {
 }
 
 async function handleLinkedMenu(env, user, text, chatId) {
-  if (text === BTN.back) {
-    await sendMessage(env, chatId, "منو جمع شد. برای باز کردن دوباره /start را بزنید.", {
-      remove_keyboard: true,
-    });
-    return;
-  }
   if (text === BTN.profile) return sendProfile(env, user, chatId);
   if (text === BTN.notify) return sendNotify(env, user, chatId);
   if (text === BTN.news) return sendNews(env, chatId);
@@ -483,7 +504,7 @@ async function handleMessage(env, update) {
       await sendMessage(
         env,
         chatId,
-        "حساب تلگرام شما با موفقیت به مهران‌نیوز متصل شد.\n\nاز دکمه‌های پایین صفحه انتخاب کنید.",
+        "حساب تلگرام شما با موفقیت به مدیری‌نیوز متصل شد.\n\nاز دکمه‌های پایین صفحه انتخاب کنید.",
         mainKeyboard(user?.role === "admin")
       );
       return;

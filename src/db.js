@@ -189,6 +189,16 @@ const ARTICLE_COLUMNS = `
   (SELECT COUNT(*) FROM comments c WHERE c.article_id = a.id AND c.status = 'approved') AS comment_count,
   EXISTS (SELECT 1 FROM likes l2 WHERE l2.article_id = a.id AND l2.user_id = ?) AS liked`;
 
+const ARTICLE_SORTS = {
+  newest: "COALESCE(a.published_at, a.fetched_at) DESC, a.id DESC",
+  popular: "like_count DESC, comment_count DESC, COALESCE(a.published_at, a.fetched_at) DESC",
+  comments: "comment_count DESC, like_count DESC, COALESCE(a.published_at, a.fetched_at) DESC",
+};
+
+export function normalizeSort(value) {
+  return Object.hasOwn(ARTICLE_SORTS, value) ? value : "newest";
+}
+
 export async function listArticles(db, limit = 300, viewerId = 0, archived = 0) {
   const { results } = await db
     .prepare(
@@ -201,6 +211,32 @@ export async function listArticles(db, limit = 300, viewerId = 0, archived = 0) 
     .bind(viewerId, archived, limit)
     .all();
   return results;
+}
+
+export async function listArticlesPage(
+  db,
+  { limit = 20, offset = 0, viewerId = 0, archived = 0, sort = "newest" } = {}
+) {
+  const order = ARTICLE_SORTS[normalizeSort(sort)];
+  const { results } = await db
+    .prepare(
+      `SELECT ${ARTICLE_COLUMNS}
+       FROM articles a
+       WHERE a.archived = ?
+       ORDER BY ${order}
+       LIMIT ? OFFSET ?`
+    )
+    .bind(viewerId, archived, limit, offset)
+    .all();
+  return results;
+}
+
+export async function countArticles(db, archived = 0) {
+  const row = await db
+    .prepare("SELECT COUNT(*) AS count FROM articles WHERE archived = ?")
+    .bind(archived)
+    .first();
+  return row?.count || 0;
 }
 
 export async function getArticle(db, id, viewerId = 0) {

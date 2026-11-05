@@ -21,10 +21,12 @@ import {
   listAdminChats,
   listApprovedComments,
   listArticles,
+  listArticlesPage,
   listCommentsForAdmin,
   listMessages,
   listUsers,
   markMessageRead,
+  normalizeSort,
   recordLoginAttempt,
   replyToComment,
   saveArticles,
@@ -49,10 +51,12 @@ import {
   verifyPassword,
 } from "./auth.js";
 import { fetchAll } from "./feeds.js";
-import { checkComment } from "./moderation.js";
+import { checkComment, containsProfanity } from "./moderation.js";
 import {
   botConfigured,
   handleTelegramWebhook,
+  notifyAdminsNewComment,
+  notifyAdminsNewUser,
   notifyNewArticles,
   notifyReply,
   sendMessage,
@@ -74,6 +78,7 @@ import {
 import { CSS } from "./style.js";
 
 const REFRESH_MIN_INTERVAL_MS = 2 * 60 * 1000;
+const HOME_PAGE_SIZE = 10;
 const USERNAME_RE = /^[\p{L}\p{N}_.-]{3,30}$/u;
 
 let refreshInFlight = null;
@@ -220,7 +225,7 @@ function loginRedirect(message, next) {
   return `/login?${params}`;
 }
 
-async function handleRegister(request, env) {
+async function handleRegister(request, env, ctx) {
   const form = await request.formData();
   const username = String(form.get("username") || "").trim();
   const password = String(form.get("password") || "");
@@ -231,6 +236,11 @@ async function handleRegister(request, env) {
 
   const { salt, hash } = await makePassword(password);
   await createUser(env.DB, { username, hash, salt, role: "user", status: "pending" });
+  ctx.waitUntil(
+    notifyAdminsNewUser(env, username).catch((error) =>
+      console.error("new user alert failed:", error)
+    )
+  );
   return redirect("/login?msg=registered");
 }
 
@@ -248,6 +258,7 @@ async function handlePanelAction(request, env, user, url, ctx) {
   if (pathname === "/panel/message") {
     const form = await request.formData();
     const body = String(form.get("body") || "").trim().slice(0, 2000);
+    if (containsProfanity(body)) return redirect("/panel?msg=message_profanity");
     if (body) {
       await createMessage(env.DB, user.id, body);
       const admins = await listAdminChats(env.DB);
@@ -456,12 +467,19 @@ async function handleArticle(request, env, url, user, ctx) {
       return redirect(`/news/${article.id}?msg=profanity#comments`);
     }
     const status = user.role === "admin" ? "approved" : "pending";
-    await createComment(env.DB, {
+    const commentId = await createComment(env.DB, {
       articleId: article.id,
       userId: user.id,
       body: result.body,
       status,
     });
+    if (user.role !== "admin") {
+      ctx.waitUntil(
+        getComment(env.DB, commentId)
+          .then((comment) => comment && notifyAdminsNewComment(env, comment))
+          .catch((error) => console.error("comment alert failed:", error))
+      );
+    }
     return redirect(`/news/${article.id}?msg=${status === "approved" ? "comment_posted" : "comment_pending"}#comments`);
   }
 
@@ -497,12 +515,28 @@ export default {
       }
 
       if (pathname === "/" && request.method === "GET") {
-        const [rows, stats] = await Promise.all([
-          listArticles(env.DB, 300, user?.id || 0, 0),
-          getStats(env.DB),
-        ]);
+        const sort = normalizeSort(url.searchParams.get("sort") || "newest");
+        const stats = await getStats(env.DB);
+        const totalPages = Math.max(1, Math.ceil(stats.count / HOME_PAGE_SIZE));
+        const requested = Number.parseInt(url.searchParams.get("page") || "1", 10);
+        const page = Math.min(Math.max(Number.isFinite(requested) ? requested : 1, 1), totalPages);
+        const rows = await listArticlesPage(env.DB, {
+          limit: HOME_PAGE_SIZE,
+          offset: (page - 1) * HOME_PAGE_SIZE,
+          viewerId: user?.id || 0,
+          sort,
+        });
         return htmlResponse(
-          homePage({ user, rows, stats, flash: flashFor(url), now: new Date() })
+          homePage({
+            user,
+            rows,
+            stats,
+            flash: flashFor(url),
+            now: new Date(),
+            sort,
+            page,
+            totalPages,
+          })
         );
       }
 
@@ -516,7 +550,7 @@ export default {
       if (pathname === "/register" && request.method === "GET") {
         return htmlResponse(registerPage({ user, flash: flashFor(url) }));
       }
-      if (pathname === "/register" && isPost) return handleRegister(request, env);
+      if (pathname === "/register" && isPost) return handleRegister(request, env, ctx);
 
       if (pathname === "/logout" && isPost) {
         await destroySession(request, env.DB);

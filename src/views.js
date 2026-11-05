@@ -30,6 +30,7 @@ const FLASH = {
     "نام کاربری باید ۳ تا ۳۰ نویسه و شامل حروف، رقم، نقطه، خط تیره یا زیرخط باشد.",
   registered: "ثبت‌نام انجام شد؛ پس از تأیید ادمین می‌توانید وارد شوید.",
   profanity: "متن نظر شامل کلمات نامناسب است؛ لطفاً آن را اصلاح کنید.",
+  message_profanity: "متن پیام شامل کلمات نامناسب است؛ لطفاً آن را اصلاح کنید.",
   comment_pending: "نظر شما ثبت شد و پس از تأیید ادمین نمایش داده می‌شود.",
   comment_posted: "نظر شما ثبت شد.",
 };
@@ -64,7 +65,7 @@ function nav(user) {
 
 function masthead(user) {
   return `<div class="topline">
-    <div class="brand"><span class="mark" aria-hidden="true"></span><h1><a href="/">مهران‌نیوز</a></h1></div>
+    <div class="brand"><span class="mark" aria-hidden="true"></span><h1><a href="/">مدیری‌نیوز</a></h1></div>
     ${nav(user)}
   </div>`;
 }
@@ -112,6 +113,9 @@ document.addEventListener("submit", async (event) => {
     const data = await response.json();
     button.classList.toggle("liked", data.liked);
     button.setAttribute("aria-pressed", data.liked ? "true" : "false");
+    button.setAttribute("aria-label", data.liked ? "برداشتن لایک" : "لایک");
+    const label = button.querySelector(".like-label");
+    if (label) label.textContent = data.liked ? "لایک شده" : "لایک";
     const count = button.querySelector(".like-count");
     if (count) {
       count.textContent = String(data.count).replace(/\\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[d]);
@@ -128,11 +132,14 @@ document.addEventListener("submit", async (event) => {
 }
 
 function likeForm(article) {
+  const liked = Boolean(article.liked);
   return `<form method="post" action="/news/${article.id}/like" class="like-form">
-    <button type="submit" class="like ${article.liked ? "liked" : ""}" aria-label="${
-      article.liked ? "برداشتن لایک" : "لایک"
-    }" aria-pressed="${article.liked ? "true" : "false"}">
-      <span aria-hidden="true">♥</span> <span class="like-count">${fa(article.like_count || 0)}</span>
+    <button type="submit" class="like action-pill ${liked ? "liked" : ""}" aria-label="${
+      liked ? "برداشتن لایک" : "لایک"
+    }" aria-pressed="${liked ? "true" : "false"}">
+      <span aria-hidden="true" class="like-heart">♥</span>
+      <span class="like-label">${liked ? "لایک شده" : "لایک"}</span>
+      <span class="like-count">${fa(article.like_count || 0)}</span>
     </button>
   </form>`;
 }
@@ -156,7 +163,10 @@ function card(row, published, now) {
     (summary ? `<p class="summary">${summary}</p>` : "") +
     `<div class="meta"><span class="source">${source}</span><span class="dot">·</span>` +
     `<time datetime="${esc(row.published_at || "")}" title="${esc(formatFull(published))}">${relative(published, now)}</time>` +
-    `<span class="dot">·</span><a class="comments-link" href="${articleUrl}#comments">${fa(row.comment_count || 0)} نظر</a>` +
+    `</div>` +
+    `<div class="card-actions">` +
+    `<a class="action-pill comments-link" href="${articleUrl}#comments">` +
+    `<span class="comments-label">نظرها</span><span class="comments-count">${fa(row.comment_count || 0)}</span></a>` +
     likeForm(row) +
     `</div></div></article>`
   );
@@ -191,22 +201,78 @@ function emptyState(canRefresh) {
 </section>`;
 }
 
-export function homePage({ user, rows, stats, flash, now }) {
+const SORT_TABS = [
+  ["newest", "جدیدترین"],
+  ["popular", "محبوب‌ترین"],
+  ["comments", "پرنظرترین"],
+];
+
+const SORT_HEADINGS = {
+  popular: "محبوب‌ترین خبرها",
+  comments: "پرنظرترین خبرها",
+};
+
+function homeHref(sort, page) {
+  const params = new URLSearchParams();
+  if (sort !== "newest") params.set("sort", sort);
+  if (page > 1) params.set("page", String(page));
+  const query = params.toString();
+  return query ? `/?${query}` : "/";
+}
+
+function pager(sort, page, totalPages) {
+  if (totalPages <= 1) return "";
+  const previous =
+    page > 1
+      ? `<a class="pager-link" href="${homeHref(sort, page - 1)}">قبلی</a>`
+      : `<span class="pager-link disabled">قبلی</span>`;
+  const next =
+    page < totalPages
+      ? `<a class="pager-link" href="${homeHref(sort, page + 1)}">بعدی</a>`
+      : `<span class="pager-link disabled">بعدی</span>`;
+  return `<nav class="pager" aria-label="صفحه‌بندی">${previous}<span class="pager-status">صفحه ${fa(
+    page
+  )} از ${fa(totalPages)}</span>${next}</nav>`;
+}
+
+export function homePage({ user, rows, stats, flash, now, sort = "newest", page = 1, totalPages = 1 }) {
   const last = stats.lastFetch ? parseDate(stats.lastFetch) : null;
   const updated = last ? relative(last, now) : "—";
-  const sections = groupRows(rows, now).map((group) => {
-    const cards = group.items.map(({ row, published }) => card(row, published, now)).join("");
-    return (
-      `<section class="day"><div class="day-head">` +
-      `<h2>${esc(group.title)}</h2><span>${esc(group.subtitle)}</span>` +
-      `</div>${cards}</section>`
-    );
-  });
+
+  let content = "";
+  if (rows.length) {
+    if (sort === "newest") {
+      content = groupRows(rows, now)
+        .map((group) => {
+          const cards = group.items.map(({ row, published }) => card(row, published, now)).join("");
+          return (
+            `<section class="day"><div class="day-head">` +
+            `<h2>${esc(group.title)}</h2><span>${esc(group.subtitle)}</span>` +
+            `</div>${cards}</section>`
+          );
+        })
+        .join("");
+    } else {
+      content =
+        `<section class="day"><div class="day-head">` +
+        `<h2>${SORT_HEADINGS[sort] || "خبرها"}</h2><span>${fa(rows.length)} خبر در این صفحه</span>` +
+        `</div>${rows.map((row) => card(row, parseDate(row.published_at), now)).join("")}</section>`;
+    }
+  } else {
+    content = emptyState(user?.role === "admin");
+  }
 
   const canRefresh = user?.role === "admin";
   const refreshForm = canRefresh
     ? `<form class="refresh inline" method="post" action="/refresh"><button type="submit">به‌روزرسانی</button></form>`
     : "";
+
+  const sortNav = `<nav class="tabs sort-tabs" aria-label="مرتب‌سازی">${SORT_TABS.map(
+    ([key, label]) =>
+      `<a href="${homeHref(key, 1)}" class="${sort === key ? "active" : ""}"${
+        sort === key ? ` aria-current="page"` : ""
+      }>${label}</a>`
+  ).join("")}</nav>`;
 
   const header = `
     <div class="status">
@@ -216,14 +282,15 @@ export function homePage({ user, rows, stats, flash, now }) {
       <span class="sep">·</span>
       <span>آخرین به‌روزرسانی ${updated}</span>
       ${refreshForm}
-    </div>`;
+    </div>
+    ${sortNav}`;
 
   return layout({
-    title: "مهران‌نیوز | اخبار مهران مدیری",
+    title: "مدیری‌نیوز | اخبار مهران مدیری",
     user,
     flash,
     header,
-    body: sections.join("") || emptyState(canRefresh),
+    body: content + pager(sort, page, totalPages),
   });
 }
 
@@ -269,7 +336,7 @@ export function articlePage({ user, article, comments, flash, now }) {
       ${commentForm}
     </section>`;
 
-  return layout({ title: `${article.title} | مهران‌نیوز`, user, flash, header, body });
+  return layout({ title: `${article.title} | مدیری‌نیوز`, user, flash, header, body });
 }
 
 export function loginPage({ user, flash, next }) {
@@ -286,7 +353,7 @@ export function loginPage({ user, flash, next }) {
       </form>
       <p class="hint">حساب ندارید؟ <a class="text-link" href="/register">ثبت‌نام کنید</a>.</p>
     </section>`;
-  return layout({ title: "ورود | مهران‌نیوز", user, flash, body });
+  return layout({ title: "ورود | مدیری‌نیوز", user, flash, body });
 }
 
 export function registerPage({ user, flash }) {
@@ -302,7 +369,7 @@ export function registerPage({ user, flash }) {
       </form>
       <p class="hint">حساب دارید؟ <a class="text-link" href="/login">وارد شوید</a>.</p>
     </section>`;
-  return layout({ title: "ثبت‌نام | مهران‌نیوز", user, flash, body });
+  return layout({ title: "ثبت‌نام | مدیری‌نیوز", user, flash, body });
 }
 
 function statusLabel(user) {
@@ -366,7 +433,7 @@ export function panelPage({ user, flash, linkToken, botUsername }) {
         <button class="primary" type="submit">ارسال پیام</button>
       </form>
     </section>`;
-  return layout({ title: "پنل من | مهران‌نیوز", user, flash, body });
+  return layout({ title: "پنل من | مدیری‌نیوز", user, flash, body });
 }
 
 function adminTabs(active) {
@@ -400,7 +467,7 @@ export function adminOverviewPage({ user, flash, stats }) {
         <a class="stat" href="/admin/users"><strong>${fa(stats.users)}</strong><span>کل کاربران</span></a>
       </div>
     </section>`;
-  return layout({ title: "پنل مدیریت | مهران‌نیوز", user, flash, body });
+  return layout({ title: "پنل مدیریت | مدیری‌نیوز", user, flash, body });
 }
 
 function newsRow(article, archived) {
@@ -428,7 +495,7 @@ export function adminNewsPage({ user, flash, articles, archived }) {
       ${adminTabs(archived ? "archive" : "news")}
       ${rows || `<p class="hint">${archived ? "آرشیو خالی است." : "خبری ثبت نشده است."}</p>`}
     </section>`;
-  return layout({ title: "مدیریت اخبار | مهران‌نیوز", user, flash, body });
+  return layout({ title: "مدیریت اخبار | مدیری‌نیوز", user, flash, body });
 }
 
 function userRow(entry, currentUser) {
@@ -481,7 +548,7 @@ export function adminUsersPage({ user, flash, entries }) {
       <h3>کاربران</h3>
       ${entries.map((entry) => userRow(entry, user)).join("") || `<p class="hint">کاربری وجود ندارد.</p>`}
     </section>`;
-  return layout({ title: "مدیریت کاربران | مهران‌نیوز", user, flash, body });
+  return layout({ title: "مدیریت کاربران | مدیری‌نیوز", user, flash, body });
 }
 
 function commentRow(comment) {
@@ -529,7 +596,7 @@ export function adminCommentsPage({ user, flash, comments, status }) {
       <nav class="tabs sub">${tabs}</nav>
       ${comments.map(commentRow).join("") || `<p class="hint">نظری در این بخش نیست.</p>`}
     </section>`;
-  return layout({ title: "مدیریت نظرها | مهران‌نیوز", user, flash, body });
+  return layout({ title: "مدیریت نظرها | مدیری‌نیوز", user, flash, body });
 }
 
 function messageRow(message) {
@@ -556,12 +623,12 @@ export function adminMessagesPage({ user, flash, messages }) {
       ${adminTabs("messages")}
       ${messages.map(messageRow).join("") || `<p class="hint">پیامی وجود ندارد.</p>`}
     </section>`;
-  return layout({ title: "پیام‌ها | مهران‌نیوز", user, flash, body });
+  return layout({ title: "پیام‌ها | مدیری‌نیوز", user, flash, body });
 }
 
 export function errorPage({ user, title, message }) {
   return layout({
-    title: `${title} | مهران‌نیوز`,
+    title: `${title} | مدیری‌نیوز`,
     user,
     body: `<section class="empty"><h2>${esc(title)}</h2><p>${esc(message)}</p><p><a class="text-link" href="/">بازگشت به خانه</a></p></section>`,
   });

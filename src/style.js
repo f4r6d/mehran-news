@@ -321,32 +321,87 @@ h1 {
   flex-wrap: wrap;
 }
 
+.card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.action-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 42px;
+  padding: 0 16px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--muted);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.action-pill:hover {
+  border-color: var(--muted);
+  color: var(--fg);
+}
+
 .comments-link {
   color: var(--muted);
 }
 
 .comments-link:hover {
+  border-color: var(--accent);
   color: var(--accent);
 }
 
+.comments-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--fg);
+  font-size: 13px;
+}
+
 .like-form {
-  display: inline;
+  display: flex;
   margin: 0;
 }
 
 .like {
-  border: 0;
-  background: none;
-  padding: 0;
   color: var(--muted);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
 }
 
-.like.liked,
+.like .like-heart {
+  font-size: 16px;
+  line-height: 1;
+}
+
 .like:hover {
+  border-color: var(--accent);
   color: var(--accent);
+}
+
+.like.liked {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+.like.liked:hover {
+  border-color: var(--accent);
+  color: var(--accent-fg);
 }
 
 button {
@@ -506,6 +561,56 @@ button.danger,
 
 .tabs.sub {
   margin-top: 0;
+}
+
+.sort-tabs {
+  margin: 12px 0 0;
+}
+
+.sort-tabs a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 0 14px;
+}
+
+.pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 40px;
+}
+
+.pager-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+  padding: 0 18px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.pager-link:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.pager-link.disabled {
+  color: var(--muted);
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.pager-status {
+  color: var(--muted);
+  font-size: 13.5px;
 }
 
 .stats-grid {
