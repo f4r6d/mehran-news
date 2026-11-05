@@ -73,8 +73,17 @@ const SCHEMA = [
     chat_id TEXT PRIMARY KEY,
     action TEXT NOT NULL,
     comment_id INTEGER,
+    message_id INTEGER,
     updated_at TEXT NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    read_at TEXT
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_messages_created ON messages (created_at DESC)",
   `CREATE TABLE IF NOT EXISTS login_attempts (
     key TEXT PRIMARY KEY,
     count INTEGER NOT NULL DEFAULT 0,
@@ -92,6 +101,10 @@ export async function ensureSchema(db, env) {
     const columns = await db.prepare("PRAGMA table_info(articles)").all();
     if (!columns.results.some((column) => column.name === "archived")) {
       await db.prepare("ALTER TABLE articles ADD COLUMN archived INTEGER NOT NULL DEFAULT 0").run();
+    }
+    const botColumns = await db.prepare("PRAGMA table_info(bot_state)").all();
+    if (!botColumns.results.some((column) => column.name === "message_id")) {
+      await db.prepare("ALTER TABLE bot_state ADD COLUMN message_id INTEGER").run();
     }
     schemaReady = true;
   }
@@ -301,10 +314,6 @@ export async function setUserNotifyEnabled(db, id, enabled) {
     .run();
 }
 
-export async function setUserPhone(db, id, phone) {
-  await db.prepare("UPDATE users SET phone = ? WHERE id = ?").bind(phone, id).run();
-}
-
 export async function setUserTelegram(db, id, chatId, username) {
   await db
     .prepare("UPDATE users SET telegram_chat_id = ?, telegram_username = ? WHERE id = ?")
@@ -331,6 +340,54 @@ export async function listNotifyTargets(db) {
     )
     .all();
   return results;
+}
+
+export async function listAdminChats(db) {
+  const { results } = await db
+    .prepare(
+      `SELECT id, username, telegram_chat_id
+       FROM users
+       WHERE role = 'admin' AND status = 'active' AND telegram_chat_id IS NOT NULL`
+    )
+    .all();
+  return results;
+}
+
+export async function createMessage(db, userId, body) {
+  const result = await db
+    .prepare("INSERT INTO messages (user_id, body, created_at) VALUES (?, ?, ?)")
+    .bind(userId, body, new Date().toISOString())
+    .run();
+  return result.meta.last_row_id;
+}
+
+export async function listMessages(db, limit = 100) {
+  const { results } = await db
+    .prepare(
+      `SELECT m.*, u.username
+       FROM messages m JOIN users u ON u.id = m.user_id
+       ORDER BY m.created_at DESC
+       LIMIT ?`
+    )
+    .bind(limit)
+    .all();
+  return results;
+}
+
+export async function countUnreadMessages(db) {
+  const row = await db.prepare("SELECT COUNT(*) AS count FROM messages WHERE read_at IS NULL").first();
+  return row?.count || 0;
+}
+
+export async function markMessageRead(db, id) {
+  await db
+    .prepare("UPDATE messages SET read_at = COALESCE(read_at, ?) WHERE id = ?")
+    .bind(new Date().toISOString(), id)
+    .run();
+}
+
+export async function deleteMessageRow(db, id) {
+  await db.prepare("DELETE FROM messages WHERE id = ?").bind(id).run();
 }
 
 export async function createLinkToken(db, userId, token, expiresAt) {
@@ -491,6 +548,18 @@ export async function setBotState(db, chatId, action, commentId = null) {
          comment_id = excluded.comment_id, updated_at = excluded.updated_at`
     )
     .bind(String(chatId), action, commentId, new Date().toISOString())
+    .run();
+}
+
+export async function setBotUiMessage(db, chatId, messageId) {
+  await db
+    .prepare(
+      `INSERT INTO bot_state (chat_id, action, comment_id, message_id, updated_at)
+       VALUES (?, 'ui', NULL, ?, ?)
+       ON CONFLICT(chat_id) DO UPDATE SET message_id = excluded.message_id,
+         updated_at = excluded.updated_at`
+    )
+    .bind(String(chatId), messageId, new Date().toISOString())
     .run();
 }
 

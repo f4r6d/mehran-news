@@ -255,18 +255,6 @@ h1 {
   color: var(--accent-fg);
 }
 
-footer {
-  margin-top: 56px;
-  padding-top: 20px;
-  border-top: 1px solid var(--line);
-  color: var(--muted);
-  font-size: 12.5px;
-}
-
-footer p {
-  margin: 0;
-}
-
 @media (max-width: 520px) {
   .masthead {
     padding-top: 36px;
@@ -528,11 +516,18 @@ button.danger,
 }
 
 .stat {
+  display: block;
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--bg);
   text-align: center;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.stat:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .stat strong {
@@ -657,6 +652,13 @@ button.danger,
 
 .admin-comment .row-actions {
   margin-top: 8px;
+}
+
+.admin-comment.unread {
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--accent-soft);
 }
 
 .reply-form {

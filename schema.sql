@@ -81,8 +81,19 @@ CREATE TABLE IF NOT EXISTS bot_state (
   chat_id TEXT PRIMARY KEY,
   action TEXT NOT NULL,
   comment_id INTEGER,
+  message_id INTEGER,
   updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  body TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  read_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_messages_created ON messages (created_at DESC);
 
 CREATE TABLE IF NOT EXISTS login_attempts (
   key TEXT PRIMARY KEY,

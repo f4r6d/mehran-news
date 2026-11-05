@@ -2,12 +2,15 @@ import {
   clearLoginAttempts,
   clearUserTelegram,
   countComments,
+  countUnreadMessages,
   countUsers,
   createComment,
   createLinkToken,
+  createMessage,
   createUser,
   deleteArticleRow,
   deleteCommentRow,
+  deleteMessageRow,
   ensureSchema,
   getArticle,
   getComment,
@@ -15,10 +18,13 @@ import {
   getStats,
   getUserByUsername,
   isRateLimited,
+  listAdminChats,
   listApprovedComments,
   listArticles,
   listCommentsForAdmin,
+  listMessages,
   listUsers,
+  markMessageRead,
   recordLoginAttempt,
   replyToComment,
   saveArticles,
@@ -26,7 +32,6 @@ import {
   setCommentStatus,
   setUserNotifyAllowed,
   setUserNotifyEnabled,
-  setUserPhone,
   setUserRole,
   setUserStatus,
   toggleLike,
@@ -45,9 +50,16 @@ import {
 } from "./auth.js";
 import { fetchAll } from "./feeds.js";
 import { checkComment } from "./moderation.js";
-import { botConfigured, handleTelegramWebhook, notifyNewArticles, notifyReply } from "./telegram.js";
+import {
+  botConfigured,
+  handleTelegramWebhook,
+  notifyNewArticles,
+  notifyReply,
+  sendMessage,
+} from "./telegram.js";
 import {
   adminCommentsPage,
+  adminMessagesPage,
   adminNewsPage,
   adminOverviewPage,
   adminUsersPage,
@@ -82,6 +94,16 @@ function htmlResponse(html, status = 200, extraHeaders = {}) {
       "Cache-Control": "no-store",
       ...SECURITY_HEADERS,
       ...extraHeaders,
+    },
+  });
+}
+
+function jsonResponse(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "no-store",
     },
   });
 }
@@ -212,7 +234,7 @@ async function handleRegister(request, env) {
   return redirect("/login?msg=registered");
 }
 
-async function handlePanelAction(request, env, user, url) {
+async function handlePanelAction(request, env, user, url, ctx) {
   const { pathname } = url;
 
   if (pathname === "/panel/notify") {
@@ -223,11 +245,23 @@ async function handlePanelAction(request, env, user, url) {
     return redirect("/panel?msg=notify_saved");
   }
 
-  if (pathname === "/panel/phone") {
+  if (pathname === "/panel/message") {
     const form = await request.formData();
-    const phone = String(form.get("phone") || "").replace(/[^\d+]/g, "").slice(0, 20);
-    await setUserPhone(env.DB, user.id, phone || null);
-    return redirect("/panel?msg=profile_saved");
+    const body = String(form.get("body") || "").trim().slice(0, 2000);
+    if (body) {
+      await createMessage(env.DB, user.id, body);
+      const admins = await listAdminChats(env.DB);
+      if (admins.length) {
+        ctx.waitUntil(
+          Promise.allSettled(
+            admins.map((admin) =>
+              sendMessage(env, admin.telegram_chat_id, `پیام تازه از ${user.username}:\n\n${body}`)
+            )
+          )
+        );
+      }
+    }
+    return redirect("/panel?msg=message_sent");
   }
 
   if (pathname === "/panel/telegram/link") {
@@ -334,6 +368,17 @@ async function handleAdminAction(request, env, user, url, ctx) {
     return redirect("/admin/comments?status=approved&msg=comment_replied");
   }
 
+  match = pathname.match(/^\/admin\/messages\/(\d+)\/(read|delete)$/);
+  if (match) {
+    const id = Number(match[1]);
+    if (match[2] === "read") {
+      await markMessageRead(env.DB, id);
+      return redirect("/admin/messages");
+    }
+    await deleteMessageRow(env.DB, id);
+    return redirect("/admin/messages");
+  }
+
   return notFound(user);
 }
 
@@ -347,16 +392,17 @@ async function handleAdminPage(env, user, url) {
   const { pathname } = url;
 
   if (pathname === "/admin") {
-    const [stats, pendingComments, pendingUsers, users] = await Promise.all([
+    const [stats, pendingComments, pendingUsers, users, unreadMessages] = await Promise.all([
       getStats(env.DB),
       countComments(env.DB, "pending"),
       countUsers(env.DB, "pending"),
       countUsers(env.DB),
+      countUnreadMessages(env.DB),
     ]);
     return adminOverviewPage({
       user,
       flash: flashFor(url),
-      stats: { ...stats, pendingComments, pendingUsers, users },
+      stats: { ...stats, pendingComments, pendingUsers, users, unreadMessages },
     });
   }
 
@@ -371,6 +417,11 @@ async function handleAdminPage(env, user, url) {
     return adminUsersPage({ user, flash: flashFor(url), entries });
   }
 
+  if (pathname === "/admin/messages") {
+    const messages = await listMessages(env.DB);
+    return adminMessagesPage({ user, flash: flashFor(url), messages });
+  }
+
   if (pathname === "/admin/comments") return renderAdminComments(env, user, url);
 
   return null;
@@ -382,10 +433,15 @@ async function handleArticle(request, env, url, user, ctx) {
 
   if (likeMatch) {
     const id = Number(likeMatch[1]);
-    if (!user) return redirect(`/login?msg=login_required&next=${encodeURIComponent(`/news/${id}`)}`);
+    const wantsJson = (request.headers.get("Accept") || "").includes("application/json");
+    if (!user) {
+      if (wantsJson) return jsonResponse({ error: "login_required" }, 401);
+      return redirect(`/login?msg=login_required&next=${encodeURIComponent(`/news/${id}`)}`);
+    }
     const article = await getArticle(env.DB, id, user.id);
-    if (!article) return notFound(user);
-    await toggleLike(env.DB, user.id, article.id);
+    if (!article) return wantsJson ? jsonResponse({ error: "not_found" }, 404) : notFound(user);
+    const result = await toggleLike(env.DB, user.id, article.id);
+    if (wantsJson) return jsonResponse(result);
     return redirect(backTo(request, `/news/${article.id}`));
   }
 
@@ -472,7 +528,7 @@ export default {
       if (pathname === "/panel") {
         if (!user) return redirect("/login?msg=login_required&next=%2Fpanel");
         if (request.method !== "GET") {
-          return handlePanelAction(request, env, user, url);
+          return handlePanelAction(request, env, user, url, ctx);
         }
         return htmlResponse(
           panelPage({
@@ -485,7 +541,7 @@ export default {
       }
       if (pathname.startsWith("/panel/") && isPost) {
         if (!user) return redirect("/login?msg=login_required&next=%2Fpanel");
-        return handlePanelAction(request, env, user, url);
+        return handlePanelAction(request, env, user, url, ctx);
       }
 
       const articleResult = await renderArticle(env, url, user);
@@ -507,6 +563,7 @@ export default {
       }
 
       if (pathname === "/refresh" && isPost) {
+        if (!user || user.role !== "admin") return forbidden(user);
         return handleRefresh(request, env, url, ctx);
       }
 

@@ -17,6 +17,7 @@ const FLASH = {
   admin_created: "ادمین جدید ساخته شد.",
   login_required: "برای این کار ابتدا وارد شوید.",
   profile_saved: "ذخیره شد.",
+  message_sent: "پیام شما برای مدیریت ارسال شد.",
   notify_saved: "وضعیت اعلان ذخیره شد.",
   telegram_unlinked: "اتصال تلگرام قطع شد.",
   pending: "حساب شما در انتظار تأیید ادمین است.",
@@ -88,18 +89,50 @@ export function layout({ title, user, body, flash, header }) {
   </header>
   ${flashHtml}
   <main>${body}</main>
-  <footer>
-    <p>منابع: بینگ‌نیوز و گوگل‌نیوز · به‌روزرسانی خودکار هر ۶ ساعت · داده‌ها در Cloudflare D1</p>
-  </footer>
 </div>
+<script>
+document.addEventListener("submit", async (event) => {
+  const form = event.target.closest(".like-form");
+  if (!form) return;
+  event.preventDefault();
+  const button = form.querySelector("button");
+  if (!button || button.disabled) return;
+  button.disabled = true;
+  try {
+    const response = await fetch(form.action, {
+      method: "POST",
+      headers: { Accept: "application/json" },
+      credentials: "same-origin",
+    });
+    if (response.status === 401) {
+      window.location.href = "/login?next=" + encodeURIComponent(location.pathname);
+      return;
+    }
+    if (!response.ok) throw new Error("failed");
+    const data = await response.json();
+    button.classList.toggle("liked", data.liked);
+    button.setAttribute("aria-pressed", data.liked ? "true" : "false");
+    const count = button.querySelector(".like-count");
+    if (count) {
+      count.textContent = String(data.count).replace(/\\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[d]);
+    }
+  } catch {
+    form.submit();
+  } finally {
+    button.disabled = false;
+  }
+});
+</script>
 </body>
 </html>`;
 }
 
 function likeForm(article) {
   return `<form method="post" action="/news/${article.id}/like" class="like-form">
-    <button type="submit" class="like ${article.liked ? "liked" : ""}" aria-label="لایک">
-      <span aria-hidden="true">♥</span> ${fa(article.like_count || 0)}
+    <button type="submit" class="like ${article.liked ? "liked" : ""}" aria-label="${
+      article.liked ? "برداشتن لایک" : "لایک"
+    }" aria-pressed="${article.liked ? "true" : "false"}">
+      <span aria-hidden="true">♥</span> <span class="like-count">${fa(article.like_count || 0)}</span>
     </button>
   </form>`;
 }
@@ -145,12 +178,18 @@ function groupRows(rows, now) {
   return groups;
 }
 
-const EMPTY_STATE = `
+function emptyState(canRefresh) {
+  return `
 <section class="empty">
   <h2>هنوز خبری ذخیره نشده است</h2>
-  <p>واکشی اولیه ممکن است چند ثانیه طول بکشد. دکمه را بزنید یا چند لحظه بعد صفحه را تازه کنید.</p>
-  <form method="post" action="/refresh"><button class="primary" type="submit">واکشی خبرها</button></form>
+  <p>چند لحظه بعد صفحه را تازه کنید.</p>
+  ${
+    canRefresh
+      ? `<form method="post" action="/refresh"><button class="primary" type="submit">واکشی خبرها</button></form>`
+      : ""
+  }
 </section>`;
+}
 
 export function homePage({ user, rows, stats, flash, now }) {
   const last = stats.lastFetch ? parseDate(stats.lastFetch) : null;
@@ -164,15 +203,19 @@ export function homePage({ user, rows, stats, flash, now }) {
     );
   });
 
+  const canRefresh = user?.role === "admin";
+  const refreshForm = canRefresh
+    ? `<form class="refresh inline" method="post" action="/refresh"><button type="submit">به‌روزرسانی</button></form>`
+    : "";
+
   const header = `
-    <p class="tagline">همه‌ی اخبار مهران مدیری، هر روز و یک‌جا — از رسانه‌های فارسی و انگلیسی.</p>
     <div class="status">
       <span>${fa(stats.count)} خبر</span>
       <span class="sep">·</span>
       <span>${fa(stats.sources)} منبع</span>
       <span class="sep">·</span>
       <span>آخرین به‌روزرسانی ${updated}</span>
-      <form class="refresh inline" method="post" action="/refresh"><button type="submit">به‌روزرسانی</button></form>
+      ${refreshForm}
     </div>`;
 
   return layout({
@@ -180,7 +223,7 @@ export function homePage({ user, rows, stats, flash, now }) {
     user,
     flash,
     header,
-    body: sections.join("") || EMPTY_STATE,
+    body: sections.join("") || emptyState(canRefresh),
   });
 }
 
@@ -233,7 +276,6 @@ export function loginPage({ user, flash, next }) {
   const body = `
     <section class="panel narrow">
       <h2>ورود</h2>
-      <p class="hint">ورود برای ادمین و کاربران یکسان است؛ دسترسی‌ها بر اساس نقش تعیین می‌شود.</p>
       <form method="post" action="/login" class="form">
         <input type="hidden" name="next" value="${esc(next || "")}">
         <label for="username">نام کاربری</label>
@@ -251,7 +293,6 @@ export function registerPage({ user, flash }) {
   const body = `
     <section class="panel narrow">
       <h2>ثبت‌نام</h2>
-      <p class="hint">پس از ثبت‌نام، حساب شما در انتظار تأیید ادمین می‌ماند.</p>
       <form method="post" action="/register" class="form">
         <label for="username">نام کاربری</label>
         <input id="username" name="username" autocomplete="username" required minlength="3" maxlength="30">
@@ -276,14 +317,13 @@ export function panelPage({ user, flash, linkToken, botUsername }) {
 
   const telegramBlock = user.telegram_chat_id
     ? `<p>وضعیت: متصل${user.telegram_username ? ` (${esc(user.telegram_username)})` : ""}</p>
-       <p class="hint">شناسه چت: <span dir="ltr">${esc(user.telegram_chat_id)}</span></p>
        ${
          user.notify_allowed
-           ? `<form method="post" action="/panel/notify" class="form inline-form">
-                <label class="check"><input type="checkbox" name="enabled" value="1" ${
-                  user.notify_enabled ? "checked" : ""
-                }> دریافت پیام در تلگرام</label>
-                <button class="primary" type="submit">ذخیره</button>
+           ? `<form method="post" action="/panel/notify">
+                <input type="hidden" name="enabled" value="${user.notify_enabled ? "0" : "1"}">
+                <button type="submit" class="${user.notify_enabled ? "" : "primary"}">${
+                  user.notify_enabled ? "خاموش کردن اعلان‌ها" : "روشن کردن اعلان‌ها"
+                }</button>
               </form>`
            : `<p class="hint">اجازه دریافت اعلان توسط ادمین غیرفعال شده است.</p>`
        }
@@ -301,8 +341,8 @@ export function panelPage({ user, flash, linkToken, botUsername }) {
 
   const tokenBlock = linkUrl
     ? `<div class="notice"><p>لینک اتصال (۱۵ دقیقه اعتبار):</p>
-         <p dir="ltr" class="mono">${esc(linkUrl)}</p>
-         <p class="hint">لینک را باز کنید و در تلگرام دکمه Start را بزنید.</p></div>`
+         <p><a class="button-link" href="${esc(linkUrl)}" target="_blank" rel="noopener noreferrer">باز کردن تلگرام و اتصال</a></p>
+         <p dir="ltr" class="mono">${esc(linkUrl)}</p></div>`
     : "";
 
   const body = `
@@ -317,10 +357,13 @@ export function panelPage({ user, flash, linkToken, botUsername }) {
       <h2>اعلان‌های تلگرام</h2>
       ${telegramBlock}
       ${tokenBlock}
-      <form method="post" action="/panel/phone" class="form">
-        <label for="phone">شماره موبایل (اختیاری)</label>
-        <input id="phone" name="phone" dir="ltr" inputmode="tel" value="${esc(user.phone || "")}" placeholder="09xxxxxxxxx">
-        <button type="submit">ذخیره شماره</button>
+    </section>
+    <section class="panel">
+      <h2>پیام به مدیریت</h2>
+      <form method="post" action="/panel/message" class="form">
+        <label for="message">متن پیام</label>
+        <textarea id="message" name="body" rows="4" maxlength="2000" required></textarea>
+        <button class="primary" type="submit">ارسال پیام</button>
       </form>
     </section>`;
   return layout({ title: "پنل من | مهران‌نیوز", user, flash, body });
@@ -333,6 +376,7 @@ function adminTabs(active) {
     ["archive", "/admin/archive", "آرشیو"],
     ["users", "/admin/users", "کاربران"],
     ["comments", "/admin/comments", "نظرها"],
+    ["messages", "/admin/messages", "پیام‌ها"],
   ];
   return `<nav class="tabs">${tabs
     .map(
@@ -348,13 +392,13 @@ export function adminOverviewPage({ user, flash, stats }) {
       <h2>پنل مدیریت</h2>
       ${adminTabs("overview")}
       <div class="stats-grid">
-        <div class="stat"><strong>${fa(stats.count)}</strong><span>خبر فعال</span></div>
-        <div class="stat"><strong>${fa(stats.archived)}</strong><span>خبر آرشیو</span></div>
-        <div class="stat"><strong>${fa(stats.pendingComments)}</strong><span>نظر در انتظار</span></div>
-        <div class="stat"><strong>${fa(stats.pendingUsers)}</strong><span>کاربر در انتظار</span></div>
-        <div class="stat"><strong>${fa(stats.users)}</strong><span>کل کاربران</span></div>
+        <a class="stat" href="/admin/news"><strong>${fa(stats.count)}</strong><span>خبر فعال</span></a>
+        <a class="stat" href="/admin/archive"><strong>${fa(stats.archived)}</strong><span>خبر آرشیو</span></a>
+        <a class="stat" href="/admin/comments?status=pending"><strong>${fa(stats.pendingComments)}</strong><span>نظر در انتظار</span></a>
+        <a class="stat" href="/admin/users"><strong>${fa(stats.pendingUsers)}</strong><span>کاربر در انتظار</span></a>
+        <a class="stat" href="/admin/messages"><strong>${fa(stats.unreadMessages)}</strong><span>پیام تازه</span></a>
+        <a class="stat" href="/admin/users"><strong>${fa(stats.users)}</strong><span>کل کاربران</span></a>
       </div>
-      <p class="hint"><a class="text-link" href="/admin/comments?status=pending">بررسی نظرهای در انتظار</a> · <a class="text-link" href="/admin/users">مدیریت کاربران</a></p>
     </section>`;
   return layout({ title: "پنل مدیریت | مهران‌نیوز", user, flash, body });
 }
@@ -486,6 +530,33 @@ export function adminCommentsPage({ user, flash, comments, status }) {
       ${comments.map(commentRow).join("") || `<p class="hint">نظری در این بخش نیست.</p>`}
     </section>`;
   return layout({ title: "مدیریت نظرها | مهران‌نیوز", user, flash, body });
+}
+
+function messageRow(message) {
+  const unread = !message.read_at;
+  const badge = unread ? `<span class="badge pending">خوانده‌نشده</span>` : "";
+  const readButton = unread
+    ? `<form method="post" action="/admin/messages/${message.id}/read" class="inline"><button type="submit">خوانده شد</button></form>`
+    : "";
+  return `<div class="comment admin-comment${unread ? " unread" : ""}">
+    <div class="comment-head">${esc(message.username)} ${badge} · ${esc(
+      formatFull(parseDate(message.created_at))
+    )}</div>
+    <p>${esc(message.body)}</p>
+    <div class="row-actions">${readButton}
+      <form method="post" action="/admin/messages/${message.id}/delete" class="inline"><button type="submit" class="danger">حذف</button></form>
+    </div>
+  </div>`;
+}
+
+export function adminMessagesPage({ user, flash, messages }) {
+  const body = `
+    <section class="panel">
+      <h2>پیام‌های کاربران</h2>
+      ${adminTabs("messages")}
+      ${messages.map(messageRow).join("") || `<p class="hint">پیامی وجود ندارد.</p>`}
+    </section>`;
+  return layout({ title: "پیام‌ها | مهران‌نیوز", user, flash, body });
 }
 
 export function errorPage({ user, title, message }) {
