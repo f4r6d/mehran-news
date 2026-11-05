@@ -552,9 +552,10 @@ export function adminUsersPage({ user, flash, entries }) {
 }
 
 function commentRow(comment) {
+  const pending = comment.status !== "approved";
   const replyForm = `<form method="post" action="/admin/comments/${comment.id}/reply" class="form reply-form">
-    <input name="reply" placeholder="پاسخ ادمین" maxlength="800" required>
-    <button class="primary" type="submit">ثبت پاسخ</button>
+    <input name="reply" placeholder="${pending ? "پاسخ ادمین (نظر تأیید و منتشر می‌شود)" : "پاسخ ادمین"}" maxlength="800" required>
+    <button class="primary" type="submit">${pending ? "ثبت پاسخ و تأیید" : "ثبت پاسخ"}</button>
   </form>`;
   const buttons = [];
   if (comment.status !== "approved") {
@@ -575,7 +576,7 @@ function commentRow(comment) {
     )}</a></p>
     ${comment.admin_reply ? `<div class="reply"><strong>پاسخ:</strong> ${esc(comment.admin_reply)}</div>` : ""}
     <div class="row-actions">${buttons.join("")}</div>
-    ${comment.status === "approved" ? replyForm : ""}
+    ${replyForm}
   </div>`;
 }
 

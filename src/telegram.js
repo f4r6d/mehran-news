@@ -362,7 +362,8 @@ export async function notifyAdminsNewUser(env, username) {
 
 export async function notifyReply(env, comment) {
   if (!botConfigured(env) || !comment?.telegram_chat_id) return false;
-  if (!comment.notify_enabled || !comment.notify_allowed) return false;
+  // پاسخ به نظر خود کاربر پیام مستقیم است و به سوییچ اعلان خبری وابسته نیست.
+  if (!comment.notify_allowed) return false;
   const text =
     `پاسخ ادمین به نظر شما:\n\n«${comment.body}»\n\n` +
     `پاسخ: ${comment.admin_reply}\n\n` +
