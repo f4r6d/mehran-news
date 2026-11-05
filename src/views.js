@@ -1,4 +1,5 @@
 import { dayParts, fa, formatFull, localDayKey, parseDate, relative } from "./jalali.js";
+import { CSS_VERSION } from "./style.js";
 
 const FLASH = {
   user_approved: "کاربر تأیید شد.",
@@ -80,7 +81,7 @@ export function layout({ title, user, body, flash, header }) {
 <meta name="color-scheme" content="light dark">
 <title>${esc(title)}</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='42' fill='%23e8590c'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/style.css?v=${CSS_VERSION}">
 </head>
 <body>
 <div class="wrap">

@@ -265,12 +265,18 @@ h1 {
   }
 
   .card {
+    flex-direction: column;
     gap: 12px;
+    padding: 16px 0;
   }
 
   .thumb {
-    flex-basis: 84px;
-    height: 60px;
+    flex: none;
+    width: calc(100% + 40px);
+    height: auto;
+    aspect-ratio: 16 / 9;
+    margin-inline: -20px;
+    border-radius: 0;
   }
 }
 
@@ -832,3 +838,10 @@ button.danger,
   }
 }
 `;
+
+let hash = 5381;
+for (let index = 0; index < CSS.length; index += 1) {
+  hash = ((hash << 5) + hash + CSS.charCodeAt(index)) >>> 0;
+}
+
+export const CSS_VERSION = hash.toString(36);
