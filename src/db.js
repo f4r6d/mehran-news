@@ -551,18 +551,6 @@ export async function setBotState(db, chatId, action, commentId = null) {
     .run();
 }
 
-export async function setBotUiMessage(db, chatId, messageId) {
-  await db
-    .prepare(
-      `INSERT INTO bot_state (chat_id, action, comment_id, message_id, updated_at)
-       VALUES (?, 'ui', NULL, ?, ?)
-       ON CONFLICT(chat_id) DO UPDATE SET message_id = excluded.message_id,
-         updated_at = excluded.updated_at`
-    )
-    .bind(String(chatId), messageId, new Date().toISOString())
-    .run();
-}
-
 export async function getBotState(db, chatId) {
   return db.prepare("SELECT * FROM bot_state WHERE chat_id = ?").bind(String(chatId)).first();
 }

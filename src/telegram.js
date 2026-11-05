@@ -13,7 +13,6 @@ import {
   replyToComment,
   setArticleArchived,
   setBotState,
-  setBotUiMessage,
   setCommentStatus,
   setUserStatus,
   setUserTelegram,
@@ -22,6 +21,11 @@ import {
 
 const API = "https://api.telegram.org";
 const MAX_MESSAGES_PER_RUN = 40;
+const FA_DIGITS = "۰۱۲۳۴۵۶۷۸۹";
+
+function fa(value) {
+  return String(value).replace(/\d/g, (digit) => FA_DIGITS[digit]);
+}
 
 const BTN = {
   profile: "پروفایل من",
@@ -31,8 +35,7 @@ const BTN = {
   pendingComments: "نظرهای در انتظار",
   pendingUsers: "کاربران در انتظار",
   adminNews: "مدیریت اخبار",
-  back: "بازگشت",
-  close: "بستن منو",
+  back: "بک",
 };
 
 const MENU_COMMANDS = new Set([
@@ -47,7 +50,6 @@ const MENU_COMMANDS = new Set([
   BTN.pendingUsers,
   BTN.adminNews,
   BTN.back,
-  BTN.close,
 ]);
 
 export function botConfigured(env) {
@@ -85,6 +87,15 @@ export async function sendMessage(env, chatId, text, keyboard) {
   return call(env, "sendMessage", payload);
 }
 
+async function answerCallback(env, callbackId, text) {
+  const payload = { callback_query_id: callbackId };
+  if (text) {
+    payload.text = text;
+    payload.show_alert = true;
+  }
+  return call(env, "answerCallbackQuery", payload);
+}
+
 function mainKeyboard(isAdmin) {
   const rows = [
     [{ text: BTN.profile }, { text: BTN.notify }],
@@ -94,7 +105,7 @@ function mainKeyboard(isAdmin) {
     rows.push([{ text: BTN.pendingComments }, { text: BTN.pendingUsers }]);
     rows.push([{ text: BTN.adminNews }]);
   }
-  rows.push([{ text: BTN.back }, { text: BTN.close }]);
+  rows.push([{ text: BTN.back }]);
   return { keyboard: rows, resize_keyboard: true, is_persistent: true };
 }
 
@@ -108,57 +119,112 @@ async function render(env, chatId, messageId, text, inline) {
   if (messageId) {
     const edited = await call(env, "editMessageText", { ...payload, message_id: messageId });
     if (edited?.ok || /message is not modified/i.test(edited?.description || "")) {
-      await setBotUiMessage(env.DB, chatId, messageId);
       return messageId;
     }
   }
   const sent = await call(env, "sendMessage", payload);
-  const id = sent?.result?.message_id || null;
-  if (id) await setBotUiMessage(env.DB, chatId, id);
-  return id;
+  return sent?.result?.message_id || null;
 }
 
-async function currentMessageId(env, chatId) {
-  const state = await getBotState(env.DB, chatId);
-  return state?.message_id || null;
-}
-
-async function showMain(env, chatId, messageId) {
-  await render(
+async function sendMenu(env, chatId, isAdmin) {
+  return sendMessage(
     env,
     chatId,
-    messageId,
     "منوی مهران‌نیوز\nاز دکمه‌های پایین صفحه انتخاب کنید.",
-    null
+    mainKeyboard(isAdmin)
   );
 }
 
-async function sendMenu(env, chatId, text, isAdmin) {
-  const sent = await sendMessage(env, chatId, text, mainKeyboard(isAdmin));
-  const id = sent?.result?.message_id || null;
-  if (id) await setBotUiMessage(env.DB, chatId, id);
-  return id;
+async function sendProfile(env, user, chatId) {
+  const notify = user.notify_enabled && user.notify_allowed ? "روشن" : "خاموش";
+  const text =
+    `نام کاربری: ${user.username}\n` +
+    `نقش: ${user.role === "admin" ? "ادمین" : "کاربر"}\n` +
+    `اعلان‌ها: ${notify}` +
+    (user.notify_allowed ? "" : "\n(اجازه اعلان توسط ادمین غیرفعال است)");
+  const inline = /^https?:\/\//i.test(env.SITE_URL || "")
+    ? { inline_keyboard: [[{ text: "باز کردن سایت", url: env.SITE_URL }]] }
+    : undefined;
+  return sendMessage(env, chatId, text, inline);
 }
 
-async function showAdmin(env, chatId, messageId, prefix = "") {
+async function sendNews(env, chatId) {
+  const articles = await listArticles(env.DB, 5, 0, 0);
+  if (!articles.length) {
+    return sendMessage(env, chatId, "هنوز خبری ذخیره نشده است.");
+  }
+  const lines = articles.map(
+    (article, index) =>
+      `${fa(index + 1)}. ${article.title}${article.source ? ` — ${article.source}` : ""}`
+  );
+  const rows = [];
+  articles.forEach((article, index) => {
+    if (/^https?:\/\//i.test(article.url || "")) {
+      rows.push([{ text: `باز کردن خبر ${fa(index + 1)}`, url: article.url }]);
+    }
+  });
+  return sendMessage(
+    env,
+    chatId,
+    `آخرین اخبار\n\n${lines.join("\n")}`,
+    rows.length ? { inline_keyboard: rows } : undefined
+  );
+}
+
+function notifyKeyboard(enabled) {
+  return {
+    inline_keyboard: [
+      [{ text: enabled ? "اعلان‌ها: روشن" : "اعلان‌ها: خاموش", callback_data: "notify" }],
+    ],
+  };
+}
+
+async function sendNotify(env, user, chatId) {
+  if (!user.notify_allowed) {
+    return sendMessage(env, chatId, "اجازه دریافت اعلان توسط ادمین غیرفعال شده است.");
+  }
+  return sendMessage(
+    env,
+    chatId,
+    "برای روشن یا خاموش کردن اعلان‌ها روی دکمه زیر بزنید.",
+    notifyKeyboard(Boolean(user.notify_enabled))
+  );
+}
+
+async function toggleNotify(env, user, chatId, callback) {
+  const messageId = callback.message?.message_id;
+  if (!messageId) {
+    await answerCallback(env, callback.id, "این دکمه قابل تغییر نیست.");
+    return;
+  }
+  if (!user.notify_allowed) {
+    await answerCallback(env, callback.id, "اجازه دریافت اعلان توسط ادمین غیرفعال شده است.");
+    return;
+  }
+  const enabled = !user.notify_enabled;
+  await env.DB.prepare("UPDATE users SET notify_enabled = ? WHERE id = ?")
+    .bind(enabled ? 1 : 0, user.id)
+    .run();
+  await call(env, "editMessageReplyMarkup", {
+    chat_id: chatId,
+    message_id: messageId,
+    reply_markup: notifyKeyboard(enabled),
+  });
+  await answerCallback(env, callback.id);
+}
+
+async function sendAdmin(env, chatId, prefix = "") {
   const [pendingComments, pendingUsers] = await Promise.all([
     countComments(env.DB, "pending"),
     countUsers(env.DB, "pending"),
   ]);
-  await render(
+  return sendMessage(
     env,
     chatId,
-    messageId,
-    `${prefix ? `${prefix}\n\n` : ""}پنل مدیریت\nنظرهای در انتظار: ${pendingComments}\nکاربران در انتظار: ${pendingUsers}`,
-    {
-      inline_keyboard: [
-        [
-          { text: BTN.pendingComments, callback_data: "admc:0" },
-          { text: BTN.pendingUsers, callback_data: "admu:0" },
-        ],
-        [{ text: BTN.adminNews, callback_data: "admnews:0" }],
-      ],
-    }
+    `${prefix ? `${prefix}\n\n` : ""}پنل مدیریت\n` +
+      `نظرهای در انتظار: ${fa(pendingComments)}\n` +
+      `کاربران در انتظار: ${fa(pendingUsers)}\n\n` +
+      "از دکمه‌های پایین صفحه انتخاب کنید."
   );
 }
 
@@ -170,17 +236,15 @@ function clampOffset(offset, length) {
 async function showComment(env, chatId, messageId, offset = 0) {
   const comments = await listCommentsForAdmin(env.DB, "pending");
   if (!comments.length) {
-    return render(env, chatId, messageId, "نظر در انتظاری وجود ندارد.", {
-      inline_keyboard: [[{ text: BTN.back, callback_data: "admin" }]],
-    });
+    return render(env, chatId, messageId, "نظر در انتظاری وجود ندارد.");
   }
   const index = clampOffset(offset, comments.length);
   const comment = comments[index];
   const text =
-    `نظر #${comment.id} از ${comment.username}\n` +
+    `نظر #${fa(comment.id)} از ${comment.username}\n` +
     `«${comment.body}»\n\n` +
     `خبر: ${comment.article_title}\n` +
-    `${index + 1} از ${comments.length}`;
+    `${fa(index + 1)} از ${fa(comments.length)}`;
   return render(env, chatId, messageId, text, {
     inline_keyboard: [
       [
@@ -191,10 +255,7 @@ async function showComment(env, chatId, messageId, offset = 0) {
         { text: "حذف", callback_data: `dl:${comment.id}:${index}` },
         { text: "پاسخ", callback_data: `rp:${comment.id}:${index}` },
       ],
-      [
-        { text: "بعدی", callback_data: `admc:${index + 1}` },
-        { text: BTN.back, callback_data: "admin" },
-      ],
+      [{ text: "بعدی", callback_data: `admc:${index + 1}` }],
     ],
   });
 }
@@ -202,23 +263,18 @@ async function showComment(env, chatId, messageId, offset = 0) {
 async function showUser(env, chatId, messageId, offset = 0) {
   const users = await listUsers(env.DB, "pending");
   if (!users.length) {
-    return render(env, chatId, messageId, "کاربر در انتظاری وجود ندارد.", {
-      inline_keyboard: [[{ text: BTN.back, callback_data: "admin" }]],
-    });
+    return render(env, chatId, messageId, "کاربر در انتظاری وجود ندارد.");
   }
   const index = clampOffset(offset, users.length);
   const entry = users[index];
-  const text = `کاربر ${entry.username} در انتظار تأیید است.\n${index + 1} از ${users.length}`;
+  const text = `کاربر ${entry.username} در انتظار تأیید است.\n${fa(index + 1)} از ${fa(users.length)}`;
   return render(env, chatId, messageId, text, {
     inline_keyboard: [
       [
         { text: "تأیید", callback_data: `ua:${entry.id}:${index}` },
         { text: "بلاک", callback_data: `ub:${entry.id}:${index}` },
       ],
-      [
-        { text: "بعدی", callback_data: `admu:${index + 1}` },
-        { text: BTN.back, callback_data: "admin" },
-      ],
+      [{ text: "بعدی", callback_data: `admu:${index + 1}` }],
     ],
   });
 }
@@ -226,37 +282,44 @@ async function showUser(env, chatId, messageId, offset = 0) {
 async function showAdminNews(env, chatId, messageId, offset = 0) {
   const articles = await listArticles(env.DB, 20, 0, 0);
   if (!articles.length) {
-    return render(env, chatId, messageId, "خبری برای مدیریت وجود ندارد.", {
-      inline_keyboard: [[{ text: BTN.back, callback_data: "admin" }]],
-    });
+    return render(env, chatId, messageId, "خبری برای مدیریت وجود ندارد.");
   }
   const index = clampOffset(offset, articles.length);
   const article = articles[index];
   const text =
     `${article.title}\n` +
     `${article.source || ""}\n` +
-    `${index + 1} از ${articles.length}`;
-  return render(env, chatId, messageId, text, {
-    inline_keyboard: [
-      [
-        { text: "آرشیو", callback_data: `aa:${article.id}:${index}` },
-        { text: "حذف", callback_data: `ad:${article.id}:${index}` },
-      ],
-      [{ text: "مشاهده خبر", url: `${env.SITE_URL || "https://example.com"}/news/${article.id}` }],
-      [
-        { text: "بعدی", callback_data: `admnews:${index + 1}` },
-        { text: BTN.back, callback_data: "admin" },
-      ],
+    `${fa(index + 1)} از ${fa(articles.length)}`;
+  const rows = [
+    [
+      { text: "آرشیو", callback_data: `aa:${article.id}:${index}` },
+      { text: "حذف", callback_data: `ad:${article.id}:${index}` },
     ],
-  });
+  ];
+  if (/^https?:\/\//i.test(env.SITE_URL || "")) {
+    rows.push([{ text: "مشاهده خبر", url: `${env.SITE_URL}/news/${article.id}` }]);
+  }
+  rows.push([{ text: "بعدی", callback_data: `admnews:${index + 1}` }]);
+  return render(env, chatId, messageId, text, { inline_keyboard: rows });
 }
 
 async function sendArticleDigestToUser(env, user, articles) {
-  const lines = articles
-    .slice(0, 3)
-    .map((article) => `${article.title}\n${article.url}`)
-    .join("\n\n");
-  return sendMessage(env, user.telegram_chat_id, `خبر تازه درباره مهران مدیری:\n\n${lines}`);
+  const selected = articles.slice(0, 3);
+  const lines = selected
+    .map((article, index) => `${fa(index + 1)}. ${article.title}`)
+    .join("\n");
+  const rows = [];
+  selected.forEach((article, index) => {
+    if (/^https?:\/\//i.test(article.url || "")) {
+      rows.push([{ text: `خواندن خبر ${fa(index + 1)}`, url: article.url }]);
+    }
+  });
+  return sendMessage(
+    env,
+    user.telegram_chat_id,
+    `خبر تازه درباره مهران مدیری:\n\n${lines}`,
+    rows.length ? { inline_keyboard: rows } : undefined
+  );
 }
 
 export async function notifyNewArticles(env, articles) {
@@ -276,28 +339,12 @@ export async function notifyReply(env, comment) {
   const text =
     `پاسخ ادمین به نظر شما:\n\n«${comment.body}»\n\n` +
     `پاسخ: ${comment.admin_reply}\n\n` +
-    `خبر: ${comment.article_title}\n${comment.article_url}`;
-  const result = await sendMessage(env, comment.telegram_chat_id, text);
+    `خبر: ${comment.article_title}`;
+  const inline = /^https?:\/\//i.test(comment.article_url || "")
+    ? { inline_keyboard: [[{ text: "باز کردن خبر", url: comment.article_url }]] }
+    : undefined;
+  const result = await sendMessage(env, comment.telegram_chat_id, text, inline);
   return Boolean(result?.ok);
-}
-
-async function showProfile(env, user, chatId, messageId) {
-  const notify = user.notify_enabled && user.notify_allowed ? "روشن" : "خاموش";
-  const text =
-    `نام کاربری: ${user.username}\n` +
-    `نقش: ${user.role === "admin" ? "ادمین" : "کاربر"}\n` +
-    `اعلان‌ها: ${notify}` +
-    (user.notify_allowed ? "" : "\n(اجازه اعلان توسط ادمین غیرفعال است)") +
-    (env.SITE_URL ? `\nسایت: ${env.SITE_URL}` : "");
-  await render(env, chatId, messageId, text, null);
-}
-
-async function showNews(env, chatId, messageId) {
-  const articles = await listArticles(env.DB, 5, 0, 0);
-  const text = articles.length
-    ? articles.map((article) => `${article.title}\n${article.url}`).join("\n\n")
-    : "هنوز خبری ذخیره نشده است.";
-  await render(env, chatId, messageId, text, null);
 }
 
 async function handleCallback(env, update) {
@@ -305,14 +352,22 @@ async function handleCallback(env, update) {
   const chatId = callback.message?.chat?.id;
   const messageId = callback.message?.message_id;
   const data = callback.data || "";
-  await call(env, "answerCallbackQuery", { callback_query_id: callback.id });
-  if (!chatId) return;
+  if (!chatId) {
+    await answerCallback(env, callback.id);
+    return;
+  }
 
   const user = await getUserByChatId(env.DB, chatId);
   if (!user || user.status !== "active") {
-    await sendMessage(env, chatId, "حساب تلگرام شما به سایت متصل نیست یا فعال نیست.");
+    await answerCallback(env, callback.id, "حساب تلگرام شما به سایت متصل نیست یا فعال نیست.");
     return;
   }
+
+  if (data === "notify") {
+    return toggleNotify(env, user, chatId, callback);
+  }
+
+  await answerCallback(env, callback.id);
 
   const isAdmin = user.role === "admin";
   const [action, rawId, rawOffset] = data.split(":");
@@ -320,14 +375,9 @@ async function handleCallback(env, update) {
   const offset = Number(rawOffset) || 0;
 
   if (data === "admin") {
-    if (isAdmin) return showAdmin(env, chatId, messageId);
+    if (isAdmin) return sendAdmin(env, chatId);
     return sendMessage(env, chatId, "شما دسترسی مدیریتی ندارید.");
   }
-  if (data === "profile") return showProfile(env, user, chatId, messageId);
-  if (data === "notify") {
-    return toggleNotify(env, user, chatId, messageId);
-  }
-  if (data === "news") return showNews(env, chatId, messageId);
 
   if (action === "admc") {
     if (!isAdmin) return;
@@ -361,9 +411,7 @@ async function handleCallback(env, update) {
   }
   if (action === "rp") {
     await setBotState(env.DB, chatId, "reply", id);
-    return render(env, chatId, messageId, `پاسخ به نظر #${id} را بنویسید.`, {
-      inline_keyboard: [[{ text: "انصراف", callback_data: `admc:${offset}` }]],
-    });
+    return sendMessage(env, chatId, `پاسخ به نظر #${fa(id)} را بنویسید.`);
   }
   if (action === "ua") {
     await setUserStatus(env.DB, id, "active", user.id);
@@ -383,53 +431,34 @@ async function handleCallback(env, update) {
   }
 }
 
-async function toggleNotify(env, user, chatId, messageId) {
-  if (!user.notify_allowed) {
-    return render(env, chatId, messageId, "اجازه دریافت اعلان برای شما غیرفعال است. با ادمین تماس بگیرید.", null);
-  }
-  const enabled = !user.notify_enabled;
-  await env.DB.prepare("UPDATE users SET notify_enabled = ? WHERE id = ?")
-    .bind(enabled ? 1 : 0, user.id)
-    .run();
-  return render(env, chatId, messageId, `اعلان‌ها ${enabled ? "روشن" : "خاموش"} شد.`, null);
-}
-
-async function handleLinkedMenu(env, user, text, chatId, messageId) {
-  if (text === BTN.close) {
-    await call(env, "sendMessage", {
-      chat_id: chatId,
-      text: "منو بسته شد. برای باز کردن دوباره /start را بزنید.",
-      reply_markup: { remove_keyboard: true },
+async function handleLinkedMenu(env, user, text, chatId) {
+  if (text === BTN.back) {
+    await sendMessage(env, chatId, "منو جمع شد. برای باز کردن دوباره /start را بزنید.", {
+      remove_keyboard: true,
     });
     return;
   }
-  if (text === BTN.back) {
-    if (user.role === "admin") return showAdmin(env, chatId, messageId);
-    return showMain(env, chatId, messageId);
-  }
-  if (text === BTN.profile) return showProfile(env, user, chatId, messageId);
-  if (text === BTN.notify) {
-    return toggleNotify(env, user, chatId, messageId);
-  }
-  if (text === BTN.news) return showNews(env, chatId, messageId);
+  if (text === BTN.profile) return sendProfile(env, user, chatId);
+  if (text === BTN.notify) return sendNotify(env, user, chatId);
+  if (text === BTN.news) return sendNews(env, chatId);
 
   if (text === BTN.admin) {
-    if (user.role === "admin") return showAdmin(env, chatId, messageId);
-    return render(env, chatId, messageId, "شما دسترسی مدیریتی ندارید.", null);
+    if (user.role === "admin") return sendAdmin(env, chatId);
+    return sendMessage(env, chatId, "شما دسترسی مدیریتی ندارید.");
   }
   if (text === BTN.pendingComments) {
-    if (user.role === "admin") return showComment(env, chatId, messageId, 0);
-    return render(env, chatId, messageId, "شما دسترسی مدیریتی ندارید.", null);
+    if (user.role === "admin") return showComment(env, chatId, null, 0);
+    return sendMessage(env, chatId, "شما دسترسی مدیریتی ندارید.");
   }
   if (text === BTN.pendingUsers) {
-    if (user.role === "admin") return showUser(env, chatId, messageId, 0);
-    return render(env, chatId, messageId, "شما دسترسی مدیریتی ندارید.", null);
+    if (user.role === "admin") return showUser(env, chatId, null, 0);
+    return sendMessage(env, chatId, "شما دسترسی مدیریتی ندارید.");
   }
   if (text === BTN.adminNews) {
-    if (user.role === "admin") return showAdminNews(env, chatId, messageId, 0);
-    return render(env, chatId, messageId, "شما دسترسی مدیریتی ندارید.", null);
+    if (user.role === "admin") return showAdminNews(env, chatId, null, 0);
+    return sendMessage(env, chatId, "شما دسترسی مدیریتی ندارید.");
   }
-  return showMain(env, chatId, messageId);
+  return sendMenu(env, chatId, user.role === "admin");
 }
 
 async function handleMessage(env, update) {
@@ -451,21 +480,16 @@ async function handleMessage(env, update) {
       }
       await setUserTelegram(env.DB, userId, chatId, username);
       user = await getUserByChatId(env.DB, chatId);
-      await sendMenu(
+      await sendMessage(
         env,
         chatId,
         "حساب تلگرام شما با موفقیت به مهران‌نیوز متصل شد.\n\nاز دکمه‌های پایین صفحه انتخاب کنید.",
-        user?.role === "admin"
+        mainKeyboard(user?.role === "admin")
       );
       return;
     }
     if (user) {
-      await sendMenu(
-        env,
-        chatId,
-        "منوی مهران‌نیوز\nاز دکمه‌های پایین صفحه انتخاب کنید.",
-        user.role === "admin"
-      );
+      await sendMenu(env, chatId, user.role === "admin");
       return;
     }
     await sendMessage(
@@ -481,19 +505,18 @@ async function handleMessage(env, update) {
     return;
   }
 
-  const messageId = await currentMessageId(env, chatId);
   const state = await getBotState(env.DB, chatId);
 
   if (state?.action === "reply" && state.comment_id && text && !MENU_COMMANDS.has(text)) {
     if (user.role !== "admin") {
       await setBotState(env.DB, chatId, "ui", null);
-      return render(env, chatId, messageId, "شما دسترسی مدیریتی ندارید.", null);
+      return sendMessage(env, chatId, "شما دسترسی مدیریتی ندارید.");
     }
     await replyToComment(env.DB, state.comment_id, text.slice(0, 800), user.id);
     const comment = await getComment(env.DB, state.comment_id);
     await notifyReply(env, comment);
     await setBotState(env.DB, chatId, "ui", null);
-    return showAdmin(env, chatId, messageId, `پاسخ ثبت شد و نظر #${state.comment_id} تأیید شد.`);
+    return sendMessage(env, chatId, `پاسخ ثبت شد و نظر #${fa(state.comment_id)} تأیید شد.`);
   }
 
   if (state?.action === "reply" && MENU_COMMANDS.has(text)) {
@@ -501,10 +524,10 @@ async function handleMessage(env, update) {
   }
 
   if (text === "/menu" || text === "منو") {
-    return showMain(env, chatId, messageId);
+    return sendMenu(env, chatId, user.role === "admin");
   }
 
-  return handleLinkedMenu(env, user, text, chatId, messageId);
+  return handleLinkedMenu(env, user, text, chatId);
 }
 
 export async function handleTelegramWebhook(request, env) {
