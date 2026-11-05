@@ -2,6 +2,7 @@ name = "mehran-news"
 main = "src/index.js"
 compatibility_date = "2026-11-05"
 workers_dev = true
+account_id = "0d619912b3aab660ba9a70726bdffced"
 
 [triggers]
 crons = ["0 */6 * * *"]
@@ -12,4 +13,4 @@ MAX_AGE_DAYS = "45"
 [[d1_databases]]
 binding = "DB"
 database_name = "mehran-news"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "6a29c1e5-efbe-472e-892d-5866112c9027"
