@@ -1,0 +1,9 @@
+node_modules/
+.tools/
+.wrangler/
+.dev.vars
+.env
+.env.*
+legacy-python/
+*.log
+.DS_Store
