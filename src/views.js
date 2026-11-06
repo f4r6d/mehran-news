@@ -302,10 +302,14 @@ export function articlePage({ user, article, comments, flash, now }) {
       const reply = comment.admin_reply
         ? `<div class="reply"><strong>پاسخ ادمین:</strong> ${esc(comment.admin_reply)}</div>`
         : "";
+      const remove =
+        user?.role === "admin"
+          ? `<div class="comment-actions"><form method="post" action="/admin/comments/${comment.id}/delete" class="inline" onsubmit="return confirm('این نظر حذف شود؟')"><button type="submit" class="danger-link">حذف نظر</button></form></div>`
+          : "";
       return `<div class="comment"><div class="comment-head">${esc(comment.username)} · ${relative(
         parseDate(comment.created_at),
         now
-      )}</div><p>${esc(comment.body)}</p>${reply}</div>`;
+      )}</div><p>${esc(comment.body)}</p>${reply}${remove}</div>`;
     })
     .join("");
 

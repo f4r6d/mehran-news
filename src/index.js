@@ -396,7 +396,9 @@ async function handleAdminAction(request, env, user, url, ctx) {
     }
     if (match[2] === "delete") {
       await deleteCommentRow(env.DB, id);
-      return redirect(backTo(request, "/admin/comments"));
+      const back = backTo(request, "/admin/comments");
+      const hash = back.startsWith("/news/") ? "#comments" : "";
+      return redirect(`${back}${back.includes("?") ? "&" : "?"}msg=comment_deleted${hash}`);
     }
     const form = await request.formData();
     const reply = String(form.get("reply") || "").trim();

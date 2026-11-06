@@ -805,6 +805,14 @@ button.danger,
   font-size: 14px;
 }
 
+.comment-actions {
+  margin-top: 6px;
+}
+
+.comment-actions .danger-link:hover {
+  text-decoration: underline;
+}
+
 .reply {
   margin-top: 8px;
   padding: 8px 12px;
