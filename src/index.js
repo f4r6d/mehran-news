@@ -25,9 +25,11 @@ import {
   listCommentsForAdmin,
   listMessages,
   listUsers,
+  listVisitsSince,
   markMessageRead,
   normalizeSort,
   recordLoginAttempt,
+  recordVisit,
   replyToComment,
   saveArticles,
   setArticleArchived,
@@ -76,12 +78,42 @@ import {
   registerPage,
 } from "./views.js";
 import { CSS } from "./style.js";
+import { dayParts, localDayKey } from "./jalali.js";
 
 const REFRESH_MIN_INTERVAL_MS = 2 * 60 * 1000;
 const HOME_PAGE_SIZE = 10;
+const VISIT_WINDOW_DAYS = 7;
 const USERNAME_RE = /^[\p{L}\p{N}_.-]{3,30}$/u;
 
 let refreshInFlight = null;
+
+function recentDays(now = new Date()) {
+  const days = [];
+  for (let offset = VISIT_WINDOW_DAYS - 1; offset >= 0; offset -= 1) {
+    const date = new Date(now.getTime() - offset * 86400000);
+    days.push({ key: localDayKey(date), date });
+  }
+  return days;
+}
+
+function trackVisit(env, ctx, user) {
+  if (user?.role === "admin") return;
+  const day = localDayKey(new Date());
+  ctx.waitUntil(
+    recordVisit(env.DB, day).catch((error) => console.error("visit tracking failed:", error))
+  );
+}
+
+async function loadDailyVisits(db, now = new Date()) {
+  const days = recentDays(now);
+  const rows = await listVisitsSince(db, days[0].key);
+  const counts = new Map(rows.map((row) => [row.day, row.views]));
+  return days.map(({ key, date }) => ({
+    day: key,
+    label: dayParts(date, now)[0],
+    views: counts.get(key) || 0,
+  }));
+}
 
 const SECURITY_HEADERS = {
   "X-Content-Type-Options": "nosniff",
@@ -403,17 +435,26 @@ async function handleAdminPage(env, user, url) {
   const { pathname } = url;
 
   if (pathname === "/admin") {
-    const [stats, pendingComments, pendingUsers, users, unreadMessages] = await Promise.all([
+    const [stats, pendingComments, pendingUsers, users, unreadMessages, visits] = await Promise.all([
       getStats(env.DB),
       countComments(env.DB, "pending"),
       countUsers(env.DB, "pending"),
       countUsers(env.DB),
       countUnreadMessages(env.DB),
+      loadDailyVisits(env.DB),
     ]);
     return adminOverviewPage({
       user,
       flash: flashFor(url),
-      stats: { ...stats, pendingComments, pendingUsers, users, unreadMessages },
+      stats: {
+        ...stats,
+        pendingComments,
+        pendingUsers,
+        users,
+        unreadMessages,
+        todayVisits: visits[visits.length - 1].views,
+      },
+      visits,
     });
   }
 
@@ -526,6 +567,7 @@ export default {
           viewerId: user?.id || 0,
           sort,
         });
+        trackVisit(env, ctx, user);
         return htmlResponse(
           homePage({
             user,
@@ -581,6 +623,7 @@ export default {
       const articleResult = await renderArticle(env, url, user);
       if (articleResult) {
         if (articleResult.status === 404) return notFound(user);
+        trackVisit(env, ctx, user);
         return htmlResponse(articleResult.html);
       }
 

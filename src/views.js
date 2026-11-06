@@ -454,12 +454,29 @@ function adminTabs(active) {
     .join("")}</nav>`;
 }
 
-export function adminOverviewPage({ user, flash, stats }) {
+export function adminOverviewPage({ user, flash, stats, visits = [] }) {
+  const maxViews = Math.max(1, ...visits.map((item) => item.views));
+  const visitRows = visits
+    .slice()
+    .reverse()
+    .map((item) => {
+      const width = item.views
+        ? Math.min(100, Math.max(10, Math.round((item.views / maxViews) * 10) * 10))
+        : 0;
+      return `<div class="visit-row">
+        <span class="visit-day">${esc(item.label)}</span>
+        <span class="visit-bar"><span class="visit-fill v-${width}"></span></span>
+        <strong class="visit-count">${fa(item.views)}</strong>
+      </div>`;
+    })
+    .join("");
+
   const body = `
     <section class="panel">
       <h2>پنل مدیریت</h2>
       ${adminTabs("overview")}
       <div class="stats-grid">
+        <a class="stat" href="#daily-visits"><strong>${fa(stats.todayVisits)}</strong><span>بازدید امروز</span></a>
         <a class="stat" href="/admin/news"><strong>${fa(stats.count)}</strong><span>خبر فعال</span></a>
         <a class="stat" href="/admin/archive"><strong>${fa(stats.archived)}</strong><span>خبر آرشیو</span></a>
         <a class="stat" href="/admin/comments?status=pending"><strong>${fa(stats.pendingComments)}</strong><span>نظر در انتظار</span></a>
@@ -467,6 +484,11 @@ export function adminOverviewPage({ user, flash, stats }) {
         <a class="stat" href="/admin/messages"><strong>${fa(stats.unreadMessages)}</strong><span>پیام تازه</span></a>
         <a class="stat" href="/admin/users"><strong>${fa(stats.users)}</strong><span>کل کاربران</span></a>
       </div>
+    </section>
+    <section class="panel" id="daily-visits">
+      <h2>بازدیدهای روزانه</h2>
+      <p class="hint">بازدید صفحات عمومی در ۷ روز اخیر، به وقت تهران.</p>
+      <div class="visit-chart">${visitRows}</div>
     </section>`;
   return layout({ title: "پنل مدیریت | مدیری‌نیوز", user, flash, body });
 }

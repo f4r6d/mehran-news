@@ -89,6 +89,10 @@ const SCHEMA = [
     count INTEGER NOT NULL DEFAULT 0,
     window_start TEXT NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS visits (
+    day TEXT PRIMARY KEY,
+    views INTEGER NOT NULL DEFAULT 0
+  )`,
 ];
 
 let schemaReady = false;
@@ -265,6 +269,24 @@ export async function getStats(db) {
     archived: archived?.count || 0,
     lastFetch: last?.value || null,
   };
+}
+
+export async function recordVisit(db, day) {
+  await db
+    .prepare(
+      `INSERT INTO visits (day, views) VALUES (?, 1)
+       ON CONFLICT(day) DO UPDATE SET views = views + 1`
+    )
+    .bind(day)
+    .run();
+}
+
+export async function listVisitsSince(db, day) {
+  const { results } = await db
+    .prepare("SELECT day, views FROM visits WHERE day >= ? ORDER BY day ASC")
+    .bind(day)
+    .all();
+  return results;
 }
 
 export async function deleteArticleRow(db, id) {

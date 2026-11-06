@@ -652,6 +652,59 @@ button.danger,
   font-size: 12px;
 }
 
+.visit-chart {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.visit-row {
+  display: grid;
+  grid-template-columns: 88px 1fr 52px;
+  align-items: center;
+  gap: 12px;
+  font-size: 14px;
+}
+
+.visit-day {
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.visit-bar {
+  display: block;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.visit-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+
+.visit-fill.v-0 { width: 0; }
+.visit-fill.v-10 { width: 10%; }
+.visit-fill.v-20 { width: 20%; }
+.visit-fill.v-30 { width: 30%; }
+.visit-fill.v-40 { width: 40%; }
+.visit-fill.v-50 { width: 50%; }
+.visit-fill.v-60 { width: 60%; }
+.visit-fill.v-70 { width: 70%; }
+.visit-fill.v-80 { width: 80%; }
+.visit-fill.v-90 { width: 90%; }
+.visit-fill.v-100 { width: 100%; }
+
+.visit-count {
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+
 .row {
   display: flex;
   flex-wrap: wrap;
