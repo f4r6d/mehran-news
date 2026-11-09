@@ -4,8 +4,8 @@ compatibility_date = "2026-11-05"
 workers_dev = true
 account_id = "0d619912b3aab660ba9a70726bdffced"
 
-[triggers]
-crons = ["0 */6 * * *"]
+# زمان‌بندی Cron فقط از داشبورد کلاودفلر مدیریت می‌شود (هر ۸ ساعت به وقت تهران).
+# افزودن بخش [triggers] به این فایل، تنظیم داشبورد را هنگام استقرار بازنویسی می‌کند.
 
 [vars]
 MAX_AGE_DAYS = "45"

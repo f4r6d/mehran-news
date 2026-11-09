@@ -2,27 +2,42 @@ import {
   clearLoginAttempts,
   clearUserTelegram,
   countComments,
+  countForumPosts,
+  countForumThreads,
   countUnreadMessages,
   countUsers,
   createComment,
+  createForumPost,
+  createForumThread,
   createLinkToken,
   createMessage,
   createUser,
   deleteArticleRow,
   deleteCommentRow,
+  deleteForumPost,
+  deleteForumThread,
   deleteMessageRow,
   ensureSchema,
   getArticle,
   getComment,
+  getForumBoard,
+  getForumPost,
+  getForumStats,
+  getForumThread,
   getMeta,
   getStats,
   getUserByUsername,
+  incrementForumThreadViews,
   isRateLimited,
+  isThreadFirstPost,
   listAdminChats,
   listApprovedComments,
   listArticles,
   listArticlesPage,
   listCommentsForAdmin,
+  listForumBoards,
+  listForumPosts,
+  listForumThreads,
   listMessages,
   listUsers,
   listVisitsSince,
@@ -32,13 +47,17 @@ import {
   recordVisit,
   replyToComment,
   saveArticles,
+  searchForumThreads,
   setArticleArchived,
   setCommentStatus,
+  setForumThreadFlag,
   setUserNotifyAllowed,
   setUserNotifyEnabled,
   setUserRole,
   setUserStatus,
+  toggleForumLike,
   toggleLike,
+  updateForumPost,
 } from "./db.js";
 import {
   clearSessionCookie,
@@ -72,6 +91,11 @@ import {
   articlePage,
   errorPage,
   flashFor,
+  forumBoardPage,
+  forumEditPostPage,
+  forumIndexPage,
+  forumNewThreadPage,
+  forumThreadPage,
   homePage,
   loginPage,
   panelPage,
@@ -83,6 +107,8 @@ import { dayParts, localDayKey } from "./jalali.js";
 const REFRESH_MIN_INTERVAL_MS = 2 * 60 * 1000;
 const HOME_PAGE_SIZE = 10;
 const VISIT_WINDOW_DAYS = 7;
+const FORUM_THREADS_PER_PAGE = 20;
+const FORUM_POSTS_PER_PAGE = 15;
 const USERNAME_RE = /^[\p{L}\p{N}_.-]{3,30}$/u;
 
 let refreshInFlight = null;
@@ -529,6 +555,203 @@ async function handleArticle(request, env, url, user, ctx) {
   return null;
 }
 
+function clampPage(value, totalPages) {
+  const requested = Number.parseInt(value || "1", 10);
+  const page = Number.isFinite(requested) ? requested : 1;
+  return Math.min(Math.max(page, 1), totalPages);
+}
+
+function checkForumTitle(value) {
+  const title = String(value ?? "").trim().replace(/\s+/g, " ");
+  if (title.length < 4 || title.length > 120) return { ok: false, msg: "forum_title_short" };
+  if (containsProfanity(title)) return { ok: false, msg: "forum_profanity" };
+  return { ok: true, title };
+}
+
+function checkForumBody(value) {
+  const body = String(value ?? "").trim();
+  if (body.length < 5) return { ok: false, msg: "forum_body_short" };
+  if (body.length > 4000) return { ok: false, msg: "forum_body_long" };
+  if (containsProfanity(body)) return { ok: false, msg: "forum_profanity" };
+  return { ok: true, body };
+}
+
+async function handleForum(request, env, url, user, ctx) {
+  const { pathname } = url;
+  const isPost = request.method === "POST";
+
+  if (pathname === "/forum" && !isPost) {
+    const term = (url.searchParams.get("q") || "").trim();
+    const [boards, stats] = await Promise.all([listForumBoards(env.DB), getForumStats(env.DB)]);
+    const results = term ? await searchForumThreads(env.DB, term) : [];
+    return htmlResponse(
+      forumIndexPage({ user, flash: flashFor(url), boards, stats, results, term, now: new Date() })
+    );
+  }
+
+  let match = pathname.match(/^\/forum\/board\/(\d+)$/);
+  if (match && !isPost) {
+    const board = await getForumBoard(env.DB, Number(match[1]));
+    if (!board) return notFound(user);
+    const total = await countForumThreads(env.DB, board.id);
+    const totalPages = Math.max(1, Math.ceil(total / FORUM_THREADS_PER_PAGE));
+    const page = clampPage(url.searchParams.get("page"), totalPages);
+    const threads = await listForumThreads(env.DB, board.id, {
+      limit: FORUM_THREADS_PER_PAGE,
+      offset: (page - 1) * FORUM_THREADS_PER_PAGE,
+    });
+    return htmlResponse(
+      forumBoardPage({ user, flash: flashFor(url), board, threads, page, totalPages, now: new Date() })
+    );
+  }
+
+  match = pathname.match(/^\/forum\/thread\/(\d+)$/);
+  if (match && !isPost) {
+    const thread = await getForumThread(env.DB, Number(match[1]));
+    if (!thread) return notFound(user);
+    const total = await countForumPosts(env.DB, thread.id);
+    const totalPages = Math.max(1, Math.ceil(total / FORUM_POSTS_PER_PAGE));
+    const page = clampPage(url.searchParams.get("page"), totalPages);
+    const posts = await listForumPosts(env.DB, thread.id, user?.id || 0, {
+      limit: FORUM_POSTS_PER_PAGE,
+      offset: (page - 1) * FORUM_POSTS_PER_PAGE,
+    });
+    if (user?.role !== "admin") {
+      ctx.waitUntil(
+        incrementForumThreadViews(env.DB, thread.id).catch((error) =>
+          console.error("forum view tracking failed:", error)
+        )
+      );
+    }
+    const quoteId = Number.parseInt(url.searchParams.get("quote") || "", 10);
+    let quote = null;
+    if (user && Number.isFinite(quoteId)) {
+      const quoted = await getForumPost(env.DB, quoteId);
+      if (quoted && quoted.thread_id === thread.id) quote = quoted;
+    }
+    return htmlResponse(
+      forumThreadPage({ user, flash: flashFor(url), thread, posts, page, totalPages, now: new Date(), quote })
+    );
+  }
+
+  if (pathname === "/forum/new" && !isPost) {
+    if (!user) return redirect("/login?msg=login_required&next=%2Fforum%2Fnew");
+    const boards = await listForumBoards(env.DB);
+    const requested = Number.parseInt(url.searchParams.get("board") || "", 10);
+    const boardId = boards.some((board) => board.id === requested)
+      ? requested
+      : boards[0]?.id || 0;
+    return htmlResponse(forumNewThreadPage({ user, flash: flashFor(url), boards, boardId }));
+  }
+
+  if (pathname === "/forum/threads" && isPost) {
+    if (!user) return redirect("/login?msg=login_required&next=%2Fforum%2Fnew");
+    const form = await request.formData();
+    const boardId = Number.parseInt(String(form.get("board_id") || ""), 10);
+    const board = Number.isFinite(boardId) ? await getForumBoard(env.DB, boardId) : null;
+    if (!board) return redirect("/forum/new?msg=forum_board_invalid");
+    const titleCheck = checkForumTitle(form.get("title"));
+    if (!titleCheck.ok) return redirect(`/forum/new?board=${board.id}&msg=${titleCheck.msg}`);
+    const bodyCheck = checkForumBody(form.get("body"));
+    if (!bodyCheck.ok) return redirect(`/forum/new?board=${board.id}&msg=${bodyCheck.msg}`);
+    const threadId = await createForumThread(env.DB, {
+      boardId: board.id,
+      userId: user.id,
+      title: titleCheck.title,
+      body: bodyCheck.body,
+    });
+    return redirect(`/forum/thread/${threadId}?msg=forum_thread_created`);
+  }
+
+  match = pathname.match(/^\/forum\/thread\/(\d+)\/reply$/);
+  if (match && isPost) {
+    const threadId = Number(match[1]);
+    if (!user) {
+      return redirect(`/login?msg=login_required&next=${encodeURIComponent(`/forum/thread/${threadId}`)}`);
+    }
+    const thread = await getForumThread(env.DB, threadId);
+    if (!thread) return notFound(user);
+    if (thread.locked && user.role !== "admin") {
+      return redirect(`/forum/thread/${thread.id}?msg=forum_locked`);
+    }
+    const form = await request.formData();
+    const bodyCheck = checkForumBody(form.get("body"));
+    if (!bodyCheck.ok) return redirect(`/forum/thread/${thread.id}?msg=${bodyCheck.msg}#reply`);
+    const quoteRaw = Number.parseInt(String(form.get("quote_post_id") || ""), 10);
+    let quotePostId = null;
+    if (Number.isFinite(quoteRaw)) {
+      const quoted = await getForumPost(env.DB, quoteRaw);
+      if (quoted && quoted.thread_id === thread.id) quotePostId = quoted.id;
+    }
+    const postId = await createForumPost(env.DB, {
+      threadId: thread.id,
+      userId: user.id,
+      body: bodyCheck.body,
+      quotePostId,
+    });
+    const total = await countForumPosts(env.DB, thread.id);
+    const page = Math.max(1, Math.ceil(total / FORUM_POSTS_PER_PAGE));
+    return redirect(`/forum/thread/${thread.id}?page=${page}&msg=forum_post_created#post-${postId}`);
+  }
+
+  match = pathname.match(/^\/forum\/post\/(\d+)\/like$/);
+  if (match && isPost) {
+    const wantsJson = (request.headers.get("Accept") || "").includes("application/json");
+    if (!user) {
+      if (wantsJson) return jsonResponse({ error: "login_required" }, 401);
+      return redirect("/login?msg=login_required&next=%2Fforum");
+    }
+    const post = await getForumPost(env.DB, Number(match[1]));
+    if (!post) return wantsJson ? jsonResponse({ error: "not_found" }, 404) : notFound(user);
+    const result = await toggleForumLike(env.DB, user.id, post.id);
+    if (wantsJson) return jsonResponse(result);
+    return redirect(backTo(request, `/forum/thread/${post.thread_id}`));
+  }
+
+  match = pathname.match(/^\/forum\/post\/(\d+)\/edit$/);
+  if (match) {
+    const post = await getForumPost(env.DB, Number(match[1]));
+    if (!post) return notFound(user);
+    if (!user || (user.id !== post.user_id && user.role !== "admin")) return forbidden(user);
+    if (!isPost) return htmlResponse(forumEditPostPage({ user, flash: flashFor(url), post }));
+    const form = await request.formData();
+    const bodyCheck = checkForumBody(form.get("body"));
+    if (!bodyCheck.ok) return redirect(`/forum/post/${post.id}/edit?msg=${bodyCheck.msg}`);
+    await updateForumPost(env.DB, post.id, bodyCheck.body);
+    return redirect(`/forum/thread/${post.thread_id}?msg=forum_post_edited#post-${post.id}`);
+  }
+
+  match = pathname.match(/^\/forum\/post\/(\d+)\/delete$/);
+  if (match && isPost) {
+    if (!user) return redirect("/login?msg=login_required&next=%2Fforum");
+    const post = await getForumPost(env.DB, Number(match[1]));
+    if (!post) return notFound(user);
+    if (user.role !== "admin" && user.id !== post.user_id) return forbidden(user);
+    if (await isThreadFirstPost(env.DB, post.id)) {
+      await deleteForumThread(env.DB, post.thread_id);
+      return redirect(`/forum/board/${post.board_id}?msg=forum_thread_deleted`);
+    }
+    await deleteForumPost(env.DB, post.id);
+    return redirect(`/forum/thread/${post.thread_id}?msg=forum_post_deleted`);
+  }
+
+  match = pathname.match(/^\/forum\/thread\/(\d+)\/(lock|pin|delete)$/);
+  if (match && isPost) {
+    if (!user || user.role !== "admin") return forbidden(user);
+    const thread = await getForumThread(env.DB, Number(match[1]));
+    if (!thread) return notFound(user);
+    if (match[2] === "delete") {
+      await deleteForumThread(env.DB, thread.id);
+      return redirect(`/forum/board/${thread.board_id}?msg=forum_thread_deleted`);
+    }
+    const flag = match[2] === "pin" ? "pinned" : "locked";
+    await setForumThreadFlag(env.DB, thread.id, flag, !thread[flag]);
+    return redirect(`/forum/thread/${thread.id}?msg=forum_updated`);
+  }
+
+  return null;
+}
+
 async function renderArticle(env, url, user) {
   const match = url.pathname.match(/^\/news\/(\d+)$/);
   if (!match) return null;
@@ -621,6 +844,9 @@ export default {
         if (!user) return redirect("/login?msg=login_required&next=%2Fpanel");
         return handlePanelAction(request, env, user, url, ctx);
       }
+
+      const forumResponse = await handleForum(request, env, url, user, ctx);
+      if (forumResponse) return forumResponse;
 
       const articleResult = await renderArticle(env, url, user);
       if (articleResult) {

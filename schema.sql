@@ -105,3 +105,44 @@ CREATE TABLE IF NOT EXISTS visits (
   day TEXT PRIMARY KEY,
   views INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS forum_boards (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS forum_threads (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  board_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  views INTEGER NOT NULL DEFAULT 0,
+  pinned INTEGER NOT NULL DEFAULT 0,
+  locked INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_forum_threads_board ON forum_threads (board_id, pinned DESC, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS forum_posts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  thread_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  body TEXT NOT NULL,
+  quote_post_id INTEGER,
+  created_at TEXT NOT NULL,
+  edited_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_forum_posts_thread ON forum_posts (thread_id, created_at);
+
+CREATE TABLE IF NOT EXISTS forum_likes (
+  user_id INTEGER NOT NULL,
+  post_id INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (user_id, post_id)
+);

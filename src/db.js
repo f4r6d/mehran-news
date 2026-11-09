@@ -93,6 +93,41 @@ const SCHEMA = [
     day TEXT PRIMARY KEY,
     views INTEGER NOT NULL DEFAULT 0
   )`,
+  `CREATE TABLE IF NOT EXISTS forum_boards (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS forum_threads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    board_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    views INTEGER NOT NULL DEFAULT 0,
+    pinned INTEGER NOT NULL DEFAULT 0,
+    locked INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_forum_threads_board ON forum_threads (board_id, pinned DESC, updated_at DESC)",
+  `CREATE TABLE IF NOT EXISTS forum_posts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    body TEXT NOT NULL,
+    quote_post_id INTEGER,
+    created_at TEXT NOT NULL,
+    edited_at TEXT
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_forum_posts_thread ON forum_posts (thread_id, created_at)",
+  `CREATE TABLE IF NOT EXISTS forum_likes (
+    user_id INTEGER NOT NULL,
+    post_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, post_id)
+  )`,
 ];
 
 let schemaReady = false;
@@ -113,6 +148,28 @@ export async function ensureSchema(db, env) {
     schemaReady = true;
   }
   await seedAdmin(db, env);
+  await seedForumBoards(db);
+}
+
+const FORUM_BOARDS = [
+  ["گفت‌وگوی عمومی", "بحث آزاد درباره مهران مدیری، آثار و خاطره‌ها"],
+  ["اخبار و حاشیه‌ها", "گفت‌وگو درباره خبرهای تازه و حاشیه‌های پیرامون آن‌ها"],
+  ["پیشنهاد و انتقاد", "ایده‌ها، پیشنهادها و انتقادهای کاربران درباره سایت و فروم"],
+];
+
+async function seedForumBoards(db) {
+  const row = await db.prepare("SELECT COUNT(*) AS count FROM forum_boards").first();
+  if (row?.count) return;
+  const now = new Date().toISOString();
+  for (let index = 0; index < FORUM_BOARDS.length; index += 1) {
+    const [title, description] = FORUM_BOARDS[index];
+    await db
+      .prepare(
+        "INSERT INTO forum_boards (title, description, sort_order, created_at) VALUES (?, ?, ?, ?)"
+      )
+      .bind(title, description, index + 1, now)
+      .run();
+  }
 }
 
 async function seedAdmin(db, env) {
@@ -615,4 +672,239 @@ export async function getBotState(db, chatId) {
 
 export async function clearBotState(db, chatId) {
   await db.prepare("DELETE FROM bot_state WHERE chat_id = ?").bind(String(chatId)).run();
+}
+
+export async function listForumBoards(db) {
+  const { results } = await db
+    .prepare(
+      `SELECT b.*,
+        (SELECT COUNT(*) FROM forum_threads t WHERE t.board_id = b.id) AS thread_count,
+        (SELECT COUNT(*) FROM forum_posts p JOIN forum_threads t ON t.id = p.thread_id
+          WHERE t.board_id = b.id) AS post_count,
+        (SELECT t2.title FROM forum_threads t2 WHERE t2.board_id = b.id
+          ORDER BY t2.updated_at DESC LIMIT 1) AS last_title,
+        (SELECT t2.updated_at FROM forum_threads t2 WHERE t2.board_id = b.id
+          ORDER BY t2.updated_at DESC LIMIT 1) AS last_at,
+        (SELECT u2.username FROM forum_threads t2 JOIN users u2 ON u2.id = t2.user_id
+          WHERE t2.board_id = b.id ORDER BY t2.updated_at DESC LIMIT 1) AS last_username,
+        (SELECT t2.id FROM forum_threads t2 WHERE t2.board_id = b.id
+          ORDER BY t2.updated_at DESC LIMIT 1) AS last_thread_id
+       FROM forum_boards b
+       ORDER BY b.sort_order ASC, b.id ASC`
+    )
+    .all();
+  return results;
+}
+
+export async function getForumBoard(db, id) {
+  return db.prepare("SELECT * FROM forum_boards WHERE id = ?").bind(id).first();
+}
+
+export async function listForumThreads(db, boardId, { limit = 20, offset = 0 } = {}) {
+  const { results } = await db
+    .prepare(
+      `SELECT t.*, u.username,
+        (SELECT COUNT(*) FROM forum_posts p WHERE p.thread_id = t.id) AS post_count,
+        (SELECT COUNT(*) FROM forum_likes l JOIN forum_posts p ON p.id = l.post_id
+          WHERE p.thread_id = t.id) AS like_count,
+        (SELECT u2.username FROM forum_posts p2 JOIN users u2 ON u2.id = p2.user_id
+          WHERE p2.thread_id = t.id ORDER BY p2.created_at DESC, p2.id DESC LIMIT 1) AS last_username
+       FROM forum_threads t
+       JOIN users u ON u.id = t.user_id
+       WHERE t.board_id = ?
+       ORDER BY t.pinned DESC, t.updated_at DESC, t.id DESC
+       LIMIT ? OFFSET ?`
+    )
+    .bind(boardId, limit, offset)
+    .all();
+  return results;
+}
+
+export async function countForumThreads(db, boardId) {
+  const row = await db
+    .prepare("SELECT COUNT(*) AS count FROM forum_threads WHERE board_id = ?")
+    .bind(boardId)
+    .first();
+  return row?.count || 0;
+}
+
+export async function getForumThread(db, id) {
+  return db
+    .prepare(
+      `SELECT t.*, u.username, u.role, b.title AS board_title,
+        (SELECT COUNT(*) FROM forum_posts p WHERE p.thread_id = t.id) AS post_count
+       FROM forum_threads t
+       JOIN users u ON u.id = t.user_id
+       JOIN forum_boards b ON b.id = t.board_id
+       WHERE t.id = ?`
+    )
+    .bind(id)
+    .first();
+}
+
+export async function listForumPosts(db, threadId, viewerId = 0, { limit = 15, offset = 0 } = {}) {
+  const { results } = await db
+    .prepare(
+      `SELECT p.*, u.username, u.role,
+        (SELECT COUNT(*) FROM forum_likes l WHERE l.post_id = p.id) AS like_count,
+        (SELECT COUNT(*) FROM forum_likes l WHERE l.post_id = p.id AND l.user_id = ?) AS liked,
+        (SELECT COUNT(*) FROM forum_posts pp WHERE pp.user_id = p.user_id) AS author_posts,
+        qu.username AS quote_username, q.body AS quote_body
+       FROM forum_posts p
+       JOIN users u ON u.id = p.user_id
+       LEFT JOIN forum_posts q ON q.id = p.quote_post_id
+       LEFT JOIN users qu ON qu.id = q.user_id
+       WHERE p.thread_id = ?
+       ORDER BY p.created_at ASC, p.id ASC
+       LIMIT ? OFFSET ?`
+    )
+    .bind(viewerId, threadId, limit, offset)
+    .all();
+  return results;
+}
+
+export async function countForumPosts(db, threadId) {
+  const row = await db
+    .prepare("SELECT COUNT(*) AS count FROM forum_posts WHERE thread_id = ?")
+    .bind(threadId)
+    .first();
+  return row?.count || 0;
+}
+
+export async function getForumPost(db, id) {
+  return db
+    .prepare(
+      `SELECT p.*, u.username, u.role, t.title AS thread_title, t.locked, t.board_id
+       FROM forum_posts p
+       JOIN users u ON u.id = p.user_id
+       JOIN forum_threads t ON t.id = p.thread_id
+       WHERE p.id = ?`
+    )
+    .bind(id)
+    .first();
+}
+
+export async function isThreadFirstPost(db, postId) {
+  const post = await db.prepare("SELECT thread_id FROM forum_posts WHERE id = ?").bind(postId).first();
+  if (!post) return false;
+  const earlier = await db
+    .prepare("SELECT 1 AS found FROM forum_posts WHERE thread_id = ? AND id < ? LIMIT 1")
+    .bind(post.thread_id, postId)
+    .first();
+  return !earlier;
+}
+
+export async function createForumThread(db, { boardId, userId, title, body }) {
+  const now = new Date().toISOString();
+  const thread = await db
+    .prepare(
+      "INSERT INTO forum_threads (board_id, user_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
+    )
+    .bind(boardId, userId, title, now, now)
+    .run();
+  const threadId = thread.meta?.last_row_id;
+  await db
+    .prepare("INSERT INTO forum_posts (thread_id, user_id, body, created_at) VALUES (?, ?, ?, ?)")
+    .bind(threadId, userId, body, now)
+    .run();
+  return threadId;
+}
+
+export async function createForumPost(db, { threadId, userId, body, quotePostId = null }) {
+  const now = new Date().toISOString();
+  const post = await db
+    .prepare(
+      "INSERT INTO forum_posts (thread_id, user_id, body, quote_post_id, created_at) VALUES (?, ?, ?, ?, ?)"
+    )
+    .bind(threadId, userId, body, quotePostId, now)
+    .run();
+  await db.prepare("UPDATE forum_threads SET updated_at = ? WHERE id = ?").bind(now, threadId).run();
+  return post.meta?.last_row_id;
+}
+
+export async function updateForumPost(db, id, body) {
+  await db
+    .prepare("UPDATE forum_posts SET body = ?, edited_at = ? WHERE id = ?")
+    .bind(body, new Date().toISOString(), id)
+    .run();
+}
+
+export async function deleteForumPost(db, id) {
+  await db.batch([
+    db.prepare("DELETE FROM forum_likes WHERE post_id = ?").bind(id),
+    db.prepare("UPDATE forum_posts SET quote_post_id = NULL WHERE quote_post_id = ?").bind(id),
+    db.prepare("DELETE FROM forum_posts WHERE id = ?").bind(id),
+  ]);
+}
+
+export async function deleteForumThread(db, id) {
+  await db.batch([
+    db
+      .prepare("DELETE FROM forum_likes WHERE post_id IN (SELECT id FROM forum_posts WHERE thread_id = ?)")
+      .bind(id),
+    db.prepare("DELETE FROM forum_posts WHERE thread_id = ?").bind(id),
+    db.prepare("DELETE FROM forum_threads WHERE id = ?").bind(id),
+  ]);
+}
+
+export async function setForumThreadFlag(db, id, flag, value) {
+  const column = flag === "pinned" ? "pinned" : "locked";
+  await db.prepare(`UPDATE forum_threads SET ${column} = ? WHERE id = ?`).bind(value ? 1 : 0, id).run();
+}
+
+export async function incrementForumThreadViews(db, id) {
+  await db.prepare("UPDATE forum_threads SET views = views + 1 WHERE id = ?").bind(id).run();
+}
+
+export async function toggleForumLike(db, userId, postId) {
+  const existing = await db
+    .prepare("SELECT 1 AS found FROM forum_likes WHERE user_id = ? AND post_id = ?")
+    .bind(userId, postId)
+    .first();
+  if (existing) {
+    await db.prepare("DELETE FROM forum_likes WHERE user_id = ? AND post_id = ?").bind(userId, postId).run();
+    const count = await db.prepare("SELECT COUNT(*) AS count FROM forum_likes WHERE post_id = ?").bind(postId).first();
+    return { liked: false, count: count?.count || 0 };
+  }
+  await db
+    .prepare("INSERT INTO forum_likes (user_id, post_id, created_at) VALUES (?, ?, ?)")
+    .bind(userId, postId, new Date().toISOString())
+    .run();
+  const count = await db.prepare("SELECT COUNT(*) AS count FROM forum_likes WHERE post_id = ?").bind(postId).first();
+  return { liked: true, count: count?.count || 0 };
+}
+
+export async function searchForumThreads(db, term, limit = 30) {
+  const like = `%${term}%`;
+  const { results } = await db
+    .prepare(
+      `SELECT DISTINCT t.id, t.title, t.board_id, t.updated_at, t.pinned, b.title AS board_title, u.username
+       FROM forum_threads t
+       JOIN users u ON u.id = t.user_id
+       JOIN forum_boards b ON b.id = t.board_id
+       LEFT JOIN forum_posts p ON p.thread_id = t.id
+       WHERE t.title LIKE ? OR p.body LIKE ?
+       ORDER BY t.updated_at DESC
+       LIMIT ?`
+    )
+    .bind(like, like, limit)
+    .all();
+  return results;
+}
+
+export async function getForumStats(db) {
+  const threads = await db.prepare("SELECT COUNT(*) AS count FROM forum_threads").first();
+  const posts = await db.prepare("SELECT COUNT(*) AS count FROM forum_posts").first();
+  const members = await db
+    .prepare("SELECT COUNT(*) AS count FROM users WHERE status = 'active'")
+    .first();
+  const newest = await db
+    .prepare("SELECT username FROM users WHERE status = 'active' ORDER BY created_at DESC LIMIT 1")
+    .first();
+  return {
+    threads: threads?.count || 0,
+    posts: posts?.count || 0,
+    members: members?.count || 0,
+    newestMember: newest?.username || null,
+  };
 }

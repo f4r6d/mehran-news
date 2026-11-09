@@ -34,6 +34,18 @@ const FLASH = {
   message_profanity: "متن پیام شامل کلمات نامناسب است؛ لطفاً آن را اصلاح کنید.",
   comment_pending: "نظر شما ثبت شد و پس از تأیید ادمین نمایش داده می‌شود.",
   comment_posted: "نظر شما ثبت شد.",
+  forum_thread_created: "رشته ساخته شد.",
+  forum_post_created: "پیام شما ثبت شد.",
+  forum_post_edited: "پیام ویرایش شد.",
+  forum_post_deleted: "پیام حذف شد.",
+  forum_thread_deleted: "رشته حذف شد.",
+  forum_updated: "تنظیمات رشته ذخیره شد.",
+  forum_locked: "این رشته قفل شده است.",
+  forum_title_short: "عنوان رشته باید بین ۴ تا ۱۲۰ نویسه باشد.",
+  forum_body_short: "متن پیام باید حداقل ۵ نویسه باشد.",
+  forum_body_long: "متن پیام نباید بیشتر از ۴۰۰۰ نویسه باشد.",
+  forum_profanity: "متن شامل کلمات نامناسب است؛ لطفاً آن را اصلاح کنید.",
+  forum_board_invalid: "تابلوی انتخاب‌شده معتبر نیست.",
 };
 
 export function flashFor(url) {
@@ -50,7 +62,7 @@ export function esc(value) {
 }
 
 function nav(user) {
-  const links = [`<a href="/">خانه</a>`];
+  const links = [`<a href="/">خانه</a>`, `<a href="/forum">فروم</a>`];
   if (user) {
     links.push(`<a href="/panel">پنل من</a>`);
     if (user.role === "admin") links.push(`<a href="/admin">مدیریت</a>`);
@@ -116,7 +128,11 @@ document.addEventListener("submit", async (event) => {
     button.setAttribute("aria-pressed", data.liked ? "true" : "false");
     button.setAttribute("aria-label", data.liked ? "برداشتن لایک" : "لایک");
     const label = button.querySelector(".like-label");
-    if (label) label.textContent = data.liked ? "لایک شده" : "لایک";
+    if (label) {
+      label.textContent = data.liked
+        ? button.dataset.labelOn || "لایک شده"
+        : button.dataset.labelOff || "لایک";
+    }
     const count = button.querySelector(".like-count");
     if (count) {
       count.textContent = String(data.count).replace(/\\d/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[d]);
@@ -659,5 +675,334 @@ export function errorPage({ user, title, message }) {
     title: `${title} | مدیری‌نیوز`,
     user,
     body: `<section class="empty"><h2>${esc(title)}</h2><p>${esc(message)}</p><p><a class="text-link" href="/">بازگشت به خانه</a></p></section>`,
+  });
+}
+
+function shorten(value, max = 160) {
+  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+function forumPager(base, page, totalPages, extra = "") {
+  if (totalPages <= 1) return "";
+  const href = (target) => `${base}?page=${target}${extra}`;
+  const previous =
+    page > 1
+      ? `<a class="pager-link" href="${href(page - 1)}">قبلی</a>`
+      : `<span class="pager-link disabled">قبلی</span>`;
+  const next =
+    page < totalPages
+      ? `<a class="pager-link" href="${href(page + 1)}">بعدی</a>`
+      : `<span class="pager-link disabled">بعدی</span>`;
+  return `<nav class="pager" aria-label="صفحه‌بندی">${previous}<span class="pager-status">صفحه ${fa(
+    page
+  )} از ${fa(totalPages)}</span>${next}</nav>`;
+}
+
+function forumCrumb(parts) {
+  return `<p class="tagline">${parts
+    .map(([href, label]) => (href ? `<a class="text-link" href="${href}">${esc(label)}</a>` : esc(label)))
+    .join(` <span class="dot">·</span> `)}</p>`;
+}
+
+function forumLikeForm(post) {
+  const liked = Boolean(post.liked);
+  return `<form method="post" action="/forum/post/${post.id}/like" class="like-form">
+    <button type="submit" class="like action-pill ${liked ? "liked" : ""}" data-label-on="پسندیده" data-label-off="پسند" aria-label="${
+      liked ? "برداشتن پسند" : "پسندیدن"
+    }" aria-pressed="${liked ? "true" : "false"}">
+      <span aria-hidden="true" class="like-heart">♥</span>
+      <span class="like-label">${liked ? "پسندیده" : "پسند"}</span>
+      <span class="like-count">${fa(post.like_count || 0)}</span>
+    </button>
+  </form>`;
+}
+
+function postCard(post, thread, user, now) {
+  const canEdit = user && (user.id === post.user_id || user.role === "admin");
+  const canDelete = canEdit;
+  const actions = [forumLikeForm(post)];
+  if (user && !thread.locked) {
+    actions.push(
+      `<a class="action-pill comments-link" href="/forum/thread/${thread.id}?quote=${post.id}#reply">نقل قول</a>`
+    );
+  }
+  if (canEdit) {
+    actions.push(`<a class="action-pill comments-link" href="/forum/post/${post.id}/edit">ویرایش</a>`);
+  }
+  if (canDelete) {
+    actions.push(
+      `<form method="post" action="/forum/post/${post.id}/delete" class="inline" onsubmit="return confirm('این پیام حذف شود؟')"><button type="submit" class="danger-link">حذف</button></form>`
+    );
+  }
+  const quote = post.quote_username
+    ? `<blockquote class="quote"><strong>${esc(post.quote_username)}:</strong> ${esc(
+        shorten(post.quote_body, 200)
+      )}</blockquote>`
+    : "";
+  return `<div class="post" id="post-${post.id}">
+    <div class="post-side">
+      <span class="avatar" aria-hidden="true">${esc(post.username.trim().charAt(0) || "؟")}</span>
+      <strong>${esc(post.username)}</strong>
+      ${post.role === "admin" ? `<span class="badge active">ادمین</span>` : ""}
+      <span class="hint">${fa(post.author_posts || 0)} پیام</span>
+    </div>
+    <div class="post-main">
+      <div class="post-head hint">${relative(parseDate(post.created_at), now)}${
+        post.edited_at ? " · ویرایش‌شده" : ""
+      }</div>
+      ${quote}
+      <p class="post-body">${esc(post.body).replace(/\n/g, "<br>")}</p>
+      <div class="post-actions">${actions.join("")}</div>
+    </div>
+  </div>`;
+}
+
+export function forumIndexPage({ user, flash, boards, stats, results, term, now }) {
+  const boardRows = boards
+    .map(
+      (board) => `<a class="board" href="/forum/board/${board.id}">
+        <div class="board-main">
+          <strong>${esc(board.title)}</strong>
+          <span class="hint">${esc(board.description)}</span>
+        </div>
+        <div class="board-meta">
+          <span>${fa(board.thread_count)} رشته</span>
+          <span>${fa(board.post_count)} پیام</span>
+        </div>
+        <div class="board-last hint">${
+          board.last_title
+            ? `آخرین رشته: <span class="fg">${esc(shorten(board.last_title, 40))}</span> · ${esc(
+                board.last_username
+              )} · ${relative(parseDate(board.last_at), now)}`
+            : "هنوز رشته‌ای ساخته نشده"
+        }</div>
+      </a>`
+    )
+    .join("");
+
+  const searchResults = term
+    ? `<section class="panel">
+        <h2>نتایج جست‌وجو برای «${esc(term)}»</h2>
+        ${
+          results.length
+            ? `<div class="thread-list">${results
+                .map(
+                  (row) => `<a class="thread-row" href="/forum/thread/${row.id}">
+                    <div class="thread-main">
+                      <strong>${esc(row.title)}</strong>
+                      <span class="hint">${esc(row.board_title)} · ${esc(row.username)} · ${relative(
+                        parseDate(row.updated_at),
+                        now
+                      )}</span>
+                    </div>
+                  </a>`
+                )
+                .join("")}</div>`
+            : `<p class="hint">رشته‌ای با این عبارت پیدا نشد.</p>`
+        }
+      </section>`
+    : "";
+
+  const body = `
+    <section class="panel">
+      <h2>فروم مدیری‌نیوز</h2>
+      <p class="hint">گفت‌وگوی جامعه‌ی کاربران؛ رشته بسازید، پاسخ دهید و پیام‌های مفید را بپسندید.</p>
+      <form method="get" action="/forum" class="form forum-search">
+        <input name="q" value="${esc(term)}" placeholder="جست‌وجو در عنوان رشته‌ها و متن پیام‌ها" maxlength="80">
+        <button type="submit">جست‌وجو</button>
+      </form>
+    </section>
+    ${searchResults}
+    <section class="panel">
+      <div class="board-list">${boardRows || `<p class="hint">تابلویی وجود ندارد.</p>`}</div>
+    </section>
+    <section class="panel">
+      <h2>آمار فروم</h2>
+      <div class="stats-grid">
+        <div class="stat"><strong>${fa(stats.threads)}</strong><span>رشته</span></div>
+        <div class="stat"><strong>${fa(stats.posts)}</strong><span>پیام</span></div>
+        <div class="stat"><strong>${fa(stats.members)}</strong><span>عضو فعال</span></div>
+        <div class="stat"><strong>${esc(stats.newestMember || "—")}</strong><span>تازه‌ترین عضو</span></div>
+      </div>
+    </section>`;
+  return layout({
+    title: "فروم | مدیری‌نیوز",
+    user,
+    flash,
+    header: forumCrumb([["/", "خانه"], [null, "فروم"]]),
+    body,
+  });
+}
+
+export function forumBoardPage({ user, flash, board, threads, page, totalPages, now }) {
+  const rows = threads.length
+    ? `<div class="thread-list">${threads
+        .map(
+          (thread) => `<a class="thread-row" href="/forum/thread/${thread.id}">
+            <div class="thread-main">
+              <strong>${thread.pinned ? `<span class="badge pending">سنجاق</span> ` : ""}${
+                thread.locked ? `<span class="badge blocked">قفل</span> ` : ""
+              }${esc(thread.title)}</strong>
+              <span class="hint">${esc(thread.username)} · ${relative(parseDate(thread.created_at), now)}</span>
+            </div>
+            <div class="thread-meta">
+              <span>${fa(Math.max(0, (thread.post_count || 1) - 1))} پاسخ</span>
+              <span>${fa(thread.views || 0)} بازدید</span>
+              <span>${fa(thread.like_count || 0)} پسند</span>
+            </div>
+            <div class="thread-last hint">${
+              thread.last_username
+                ? `آخرین پیام: ${esc(thread.last_username)} · ${relative(parseDate(thread.updated_at), now)}`
+                : ""
+            }</div>
+          </a>`
+        )
+        .join("")}</div>`
+    : `<p class="hint">هنوز رشته‌ای در این تابلو ساخته نشده است.</p>`;
+
+  const body = `
+    <section class="panel">
+      <div class="forum-toolbar">
+        <div>
+          <h2>${esc(board.title)}</h2>
+          <p class="hint">${esc(board.description)}</p>
+        </div>
+        ${
+          user
+            ? `<a class="button-link" href="/forum/new?board=${board.id}">رشته تازه</a>`
+            : `<a class="button-link" href="/login?next=%2Fforum%2Fnew">ورود برای ساخت رشته</a>`
+        }
+      </div>
+      ${rows}
+      ${forumPager(`/forum/board/${board.id}`, page, totalPages)}
+    </section>`;
+  return layout({
+    title: `${board.title} | فروم مدیری‌نیوز`,
+    user,
+    flash,
+    header: forumCrumb([["/", "خانه"], ["/forum", "فروم"], [null, board.title]]),
+    body,
+  });
+}
+
+export function forumThreadPage({ user, flash, thread, posts, page, totalPages, now, quote }) {
+  const isAdmin = user?.role === "admin";
+  const controls = isAdmin
+    ? `<div class="row-actions">
+        <form method="post" action="/forum/thread/${thread.id}/pin" class="inline"><button type="submit">${
+          thread.pinned ? "برداشتن سنجاق" : "سنجاق"
+        }</button></form>
+        <form method="post" action="/forum/thread/${thread.id}/lock" class="inline"><button type="submit">${
+          thread.locked ? "باز کردن قفل" : "قفل"
+        }</button></form>
+        <form method="post" action="/forum/thread/${thread.id}/delete" class="inline" onsubmit="return confirm('این رشته با همه پیام‌هایش حذف شود؟')"><button type="submit" class="danger">حذف رشته</button></form>
+      </div>`
+    : "";
+
+  const canReply = user && (!thread.locked || isAdmin);
+  const replyForm = canReply
+    ? `<form method="post" action="/forum/thread/${thread.id}/reply" class="form" id="reply">
+        ${quote ? `<input type="hidden" name="quote_post_id" value="${quote.id}">` : ""}
+        ${
+          quote
+            ? `<div class="quote"><strong>نقل قول از ${esc(quote.username)}:</strong> ${esc(
+                shorten(quote.body, 200)
+              )}</div>`
+            : ""
+        }
+        <label for="reply-body">پاسخ شما</label>
+        <textarea id="reply-body" name="body" rows="4" maxlength="4000" required></textarea>
+        <button class="primary" type="submit">ثبت پاسخ</button>
+      </form>`
+    : thread.locked
+      ? `<p class="notice">این رشته قفل شده است و فقط ادمین می‌تواند پاسخ دهد.</p>`
+      : `<p class="hint">برای پاسخ دادن <a class="text-link" href="/login?next=${encodeURIComponent(
+          `/forum/thread/${thread.id}`
+        )}">وارد شوید</a>.</p>`;
+
+  const body = `
+    <section class="panel">
+      <div class="forum-toolbar">
+        <div>
+          <h2>${thread.pinned ? `<span class="badge pending">سنجاق</span> ` : ""}${
+            thread.locked ? `<span class="badge blocked">قفل</span> ` : ""
+          }${esc(thread.title)}</h2>
+          <p class="hint">${esc(thread.board_title)} · ${esc(thread.username)} · ${formatFull(
+            parseDate(thread.created_at)
+          )} · ${fa(thread.views || 0)} بازدید</p>
+        </div>
+      </div>
+      ${controls}
+      <div class="post-list">${posts.map((post) => postCard(post, thread, user, now)).join("")}</div>
+      ${forumPager(`/forum/thread/${thread.id}`, page, totalPages)}
+      ${replyForm}
+    </section>`;
+  return layout({
+    title: `${thread.title} | فروم مدیری‌نیوز`,
+    user,
+    flash,
+    header: forumCrumb([
+      ["/", "خانه"],
+      ["/forum", "فروم"],
+      [`/forum/board/${thread.board_id}`, thread.board_title],
+      [null, shorten(thread.title, 40)],
+    ]),
+    body,
+  });
+}
+
+export function forumNewThreadPage({ user, flash, boards, boardId }) {
+  const body = `
+    <section class="panel narrow">
+      <h2>رشته تازه</h2>
+      <form method="post" action="/forum/threads" class="form">
+        <label for="board_id">تابلو</label>
+        <select id="board_id" name="board_id">
+          ${boards
+            .map(
+              (board) =>
+                `<option value="${board.id}"${board.id === boardId ? " selected" : ""}>${esc(
+                  board.title
+                )}</option>`
+            )
+            .join("")}
+        </select>
+        <label for="title">عنوان رشته</label>
+        <input id="title" name="title" maxlength="120" minlength="4" required>
+        <label for="body">اولین پیام</label>
+        <textarea id="body" name="body" rows="6" maxlength="4000" required></textarea>
+        <p class="hint">متن شامل کلمات نامناسب خودکار رد می‌شود.</p>
+        <button class="primary" type="submit">ساخت رشته</button>
+      </form>
+    </section>`;
+  return layout({
+    title: "رشته تازه | فروم مدیری‌نیوز",
+    user,
+    flash,
+    header: forumCrumb([["/", "خانه"], ["/forum", "فروم"], [null, "رشته تازه"]]),
+    body,
+  });
+}
+
+export function forumEditPostPage({ user, flash, post }) {
+  const body = `
+    <section class="panel narrow">
+      <h2>ویرایش پیام</h2>
+      <p class="hint">رشته: <a class="text-link" href="/forum/thread/${post.thread_id}">${esc(
+        post.thread_title
+      )}</a></p>
+      <form method="post" action="/forum/post/${post.id}/edit" class="form">
+        <label for="body">متن پیام</label>
+        <textarea id="body" name="body" rows="6" maxlength="4000" required>${esc(post.body)}</textarea>
+        <button class="primary" type="submit">ذخیره</button>
+      </form>
+    </section>`;
+  return layout({
+    title: "ویرایش پیام | فروم مدیری‌نیوز",
+    user,
+    flash,
+    header: forumCrumb([["/", "خانه"], ["/forum", "فروم"], [null, "ویرایش پیام"]]),
+    body,
   });
 }
